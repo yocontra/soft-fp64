@@ -115,6 +115,21 @@ scan "fp-contract-escape" \
 scan "fp-lit-compare" \
     '[a-zA-Z_)][[:space:]]*(<|>|<=|>=|==|!=)[[:space:]]*(-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?|-?[0-9]+[eE][-+]?[0-9]+)\b'
 
+# 8. Raw comparisons involving a double-typed expression where neither
+#    operand is an FP literal. Catches the pattern that slipped through
+#    rule 7 during the original carve-out sweep — e.g.
+#    `if (x.hi < y.hi)`, `if (sf64_fabs(x) < sf64_fabs(y))`. The hooks:
+#      - `.hi` / `.lo` / `.dd` — DD struct fields are doubles by definition
+#      - `sf64_fabs(…)` / `sf64_neg(…)` / `dd_to_d(…)` — return double
+#      - `from_bits(…)` — reinterprets uint64_t bits as double
+#    If any of these appears immediately followed by a relational operator,
+#    the line is doing a host-FPU comparison and must use the
+#    `sleef::lt_/le_/gt_/ge_/eq_/ne_` helpers instead.
+#    Heuristic note: integer-typed structs that happen to have `.hi` /
+#    `.lo` fields would false-positive here, but the codebase has none.
+scan "fp-var-compare" \
+    '(\.(hi|lo|dd)|sf64_fabs\([^()]*\)|sf64_neg\([^()]*\)|dd_to_d\([^()]*\)|from_bits\([^()]*\))[[:space:]]*(<=|>=|==|!=|<[^<=]|>[^>=])'
+
 if [ "$findings" -gt 0 ]; then
     echo "" >&2
     echo "check_no_host_fp: $findings finding(s) — see CLAUDE.md § Hard constraints." >&2

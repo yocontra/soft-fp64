@@ -412,6 +412,28 @@ Stats sweep2_log(const char* name, Tier tier, SoftFn soft, Mpfr2 mref, double xl
     return s;
 }
 
+// 2-arg sweep, log-uniform in x (with optional symmetric flag), linear
+// in y. Use when the x range spans many decades but y is a narrow
+// linear band — typical of pow / powr / fmod where the algorithmic
+// regime varies with |x| but y stays modest.
+template <class SoftFn>
+Stats sweep2_log_uniform(const char* name, Tier tier, SoftFn soft, Mpfr2 mref, double xlo_abs,
+                         double xhi_abs, bool x_sym, double ylo, double yhi,
+                         uint64_t seed = 0xCAFE5EEDULL) {
+    Stats s;
+    s.name = name;
+    s.tier = tier;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND; ++i) {
+        double x = rng.log_uniform(xlo_abs, xhi_abs);
+        if (x_sym && (rng.next() & 1))
+            x = -x;
+        const double y = rng.uniform(ylo, yhi);
+        record(s, x, y, soft(x, y), ref2(mref, x, y));
+    }
+    return s;
+}
+
 // atan2-style: sample over a ring to cover all quadrants robustly.
 template <class SoftFn>
 Stats sweep_atan2like(const char* name, Tier tier, SoftFn soft, Mpfr2 mref,
@@ -633,9 +655,12 @@ int main() {
     // polynomial on x².hi as a plain double, which caps the log DD at
     // ~2^-56 relative. A full DD-Horner rewrite of the log minimax is
     // tracked in TODO.md; in the meantime we document the bounded range.
-    results.push_back(sweep2_uniform(
-        "pow", U35, [](double x, double y) { return sf64_pow(x, y); }, mpfr_pow, 1e-6, 1e6, -50.0,
-        50.0));
+    // x log-sampled across 12 decades (positive only — pow with negative
+    // base + non-integer y returns NaN, which would dominate trivial
+    // matches); y is a narrow linear range so linear sampling is fine.
+    results.push_back(sweep2_log_uniform(
+        "pow", U35, [](double x, double y) { return sf64_pow(x, y); }, mpfr_pow, 1e-6, 1e6,
+        /*x_sym=*/false, -50.0, 50.0));
     // pow-xbig: x log-uniform across 200 decades, y log-uniform in
     // [1e-5, 5] with random sign so negative y is exercised. Linear
     // sampling here would concentrate 99%+ of x samples near 1e100 and
@@ -647,12 +672,17 @@ int main() {
     results.push_back(sweep2_log(
         "pow-xbig", U35, [](double x, double y) { return sf64_pow(x, y); }, mpfr_pow, 1e-100, 1e100,
         /*x_sym=*/false, 1e-5, 5.0, /*y_sym=*/true, 0xA110CA7EULL));
-    results.push_back(sweep2_uniform(
+    // pow-ybig: x log-sampled across 9 decades, y wide linear (the
+    // failure-driving axis here is y, and a linear ±100 stays narrow
+    // enough to sample uniformly).
+    results.push_back(sweep2_log_uniform(
         "pow-ybig", U35, [](double x, double y) { return sf64_pow(x, y); }, mpfr_pow, 1e-6, 1e3,
-        -100.0, 100.0, 0xB16B00B5ULL));
-    results.push_back(sweep2_uniform(
+        /*x_sym=*/false, -100.0, 100.0, 0xB16B00B5ULL));
+    // powr: same shape as pow but x ≥ 0 is required by the spec; log
+    // sampling keeps small-x exercised.
+    results.push_back(sweep2_log_uniform(
         "powr", U35, [](double x, double y) { return sf64_powr(x, y); }, mpfr_powr, 1e-6, 1e6,
-        -50.0, 50.0));
+        /*x_sym=*/false, -50.0, 50.0));
     results.push_back(sweep_pown("pown", U35));
     results.push_back(sweep_rootn("rootn", U35));
     // cbrt across the full double range including subnormals.
@@ -702,12 +732,23 @@ int main() {
     // 0 ULP against MPFR is a real bug, not a tier-fit issue. Sweep ranges
     // are wide enough that the quotient bit-count reaches ~2^50, well past
     // any loop-termination edge.
-    results.push_back(sweep2_uniform(
-        "fmod", BIT_EXACT, [](double x, double y) { return sf64_fmod(x, y); }, mpfr_fmod, -1e15,
-        1e15, 1.0, 1e10));
-    results.push_back(sweep2_uniform(
+    // x log-symmetric across 30 decades (denorm_min..1e15, both signs);
+    // y log-uniform in [1, 1e10] (10 decades, positive only — sign of
+    // y doesn't affect fmod magnitude). Linear sampling here would
+    // collapse x and y both into the top decade of their windows, so
+    // 99% of (x, y) pairs would have |x| ≪ |y| (early-return branch
+    // returns x) or |x|/|y| ≈ 10⁵ (only ~17 quotient bits exercised).
+    // Log sampling actually exercises the algorithmic regimes the
+    // BIT_EXACT claim covers — small-x return path, large-quotient
+    // long-division loop, denormal operands.
+    results.push_back(sweep2_log(
+        "fmod", BIT_EXACT, [](double x, double y) { return sf64_fmod(x, y); }, mpfr_fmod,
+        std::numeric_limits<double>::denorm_min(), 1e15, /*x_sym=*/true, 1.0, 1e10,
+        /*y_sym=*/false));
+    results.push_back(sweep2_log(
         "remainder", BIT_EXACT, [](double x, double y) { return sf64_remainder(x, y); },
-        mpfr_remainder, -1e15, 1e15, 1.0, 1e10));
+        mpfr_remainder, std::numeric_limits<double>::denorm_min(), 1e15, /*x_sym=*/true, 1.0, 1e10,
+        /*y_sym=*/false));
 
     // --- hypot ----------------------------------------------------------
     // hypot's scaling formula must handle operands spanning the full

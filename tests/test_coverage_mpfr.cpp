@@ -146,6 +146,14 @@ struct Stats {
     int nan_mismatch = 0;
     int inf_mismatch = 0;
     int zero_mismatch = 0;
+    // Trivial matches: both impl and oracle returned matching NaN-or-
+    // signed-infinity. These contribute nothing to precision verification
+    // — they only confirm the algorithm overflows / NaN-propagates the
+    // same way the oracle does. A sweep whose sampling regime collapses
+    // most inputs into the degenerate regime is not actually testing
+    // precision in its advertised range. Gated at 25% in fail(), same
+    // threshold as tests/mpfr/test_mpfr_diff.cpp.
+    int trivial_matches = 0;
     int64_t tier = 4;
 };
 
@@ -157,8 +165,10 @@ void record(Stats& s, double x, double y, double got, double expect) {
         s.nan_mismatch++;
         return;
     }
-    if (gnan && enan)
+    if (gnan && enan) {
+        s.trivial_matches++;
         return;
+    }
     const bool ginf = std::isinf(got);
     const bool einf = std::isinf(expect);
     if (ginf != einf) {
@@ -167,6 +177,15 @@ void record(Stats& s, double x, double y, double got, double expect) {
     }
     if (ginf && einf && (got > 0) != (expect > 0)) {
         s.inf_mismatch++;
+        return;
+    }
+    if (ginf && einf) {
+        // Both sides are ±inf with matching sign. The algorithm and the
+        // oracle agree the input overflows; we learn nothing about
+        // precision. Pre-fix this fell through to ulp_diff which returned
+        // 0 for matching bit patterns — silently counted as a "0-ULP"
+        // success.
+        s.trivial_matches++;
         return;
     }
     // Zero-class symmetry: ULP diff on its own doesn't distinguish
@@ -191,19 +210,39 @@ void record(Stats& s, double x, double y, double got, double expect) {
     }
 }
 
+constexpr double kTrivialMatchMaxRatio = 0.25;
+
 bool fail(const Stats& s) {
     if (s.nan_mismatch > 0 || s.inf_mismatch > 0)
         return true;
     if (s.zero_mismatch > 0)
         return true;
-    return s.max_ulp > s.tier;
+    if (s.max_ulp > s.tier)
+        return true;
+    if (s.checked > 0) {
+        const double ratio = static_cast<double>(s.trivial_matches) / s.checked;
+        if (ratio > kTrivialMatchMaxRatio) {
+            std::fprintf(stderr,
+                         "    !! trivial-match gate: %d/%d = %.1f%% > %.0f%% — sampling regime "
+                         "collapses into overflow/underflow/NaN for the majority of inputs; the "
+                         "sweep is not actually testing precision in the advertised range.\n",
+                         s.trivial_matches, s.checked,
+                         100.0 * static_cast<double>(s.trivial_matches) / s.checked,
+                         100.0 * kTrivialMatchMaxRatio);
+            return true;
+        }
+    }
+    return false;
 }
 
 void report(const Stats& s) {
-    std::printf("  %-14s n=%-5d max_ulp=%-5lld tier=%-3lld "
+    const double trivial_pct =
+        s.checked > 0 ? (100.0 * static_cast<double>(s.trivial_matches) / s.checked) : 0.0;
+    std::printf("  %-14s n=%-5d max_ulp=%-5lld tier=%-3lld trivial=%5.1f%% "
                 "worst (x=%.17g y=%.17g got=%.17g expect=%.17g)\n",
                 s.name, s.checked, static_cast<long long>(s.max_ulp),
-                static_cast<long long>(s.tier), s.worst_x, s.worst_y, s.worst_got, s.worst_expect);
+                static_cast<long long>(s.tier), trivial_pct, s.worst_x, s.worst_y, s.worst_got,
+                s.worst_expect);
     if (s.nan_mismatch || s.inf_mismatch || s.zero_mismatch) {
         std::printf("    !! nan_mismatch=%d inf_mismatch=%d zero_mismatch=%d\n", s.nan_mismatch,
                     s.inf_mismatch, s.zero_mismatch);
@@ -225,17 +264,32 @@ int main() {
         s.name = "powr";
         s.tier = 4;
         LCG rng(0x50FA64C0FFEEULL);
-        // ~1024 pairs, log-uniform x in [1e-200, 1e200], uniform y in [-50, 50].
-        // MPFR references that collapse to ±0 or ±inf are forwarded to
-        // `record()` as-is; the zero/inf-class branches inside `record()`
-        // require soft-fp64 to agree on class and sign. Silently dropping
-        // these inputs would mask real overflow / underflow regressions.
+        // ~1024 pairs, log-uniform x in [1e-100, 1e100], uniform y in [-3, 3].
+        // The bounds are picked so |y · log(x)| ≤ 3·230 = 690 stays inside
+        // the exp range (~±709), keeping ~all outputs representable so the
+        // sweep actually tests precision rather than overflow/underflow
+        // class agreement. The previous bounds (x in [1e-200, 1e200],
+        // y in [-50, 50]) gave 41.7% trivial-match (samples that overflow
+        // / underflow on both sides) which the trivial-match gate fires on
+        // — it's a coverage claim that collapses into class-agreement, not
+        // precision testing.
+        //
+        // Overflow / underflow class-agreement coverage lives in
+        // tests/test_powr_ieee754.cpp, which is bit-exact (not ULP) and
+        // explicitly enumerates the §9.2.1 boundary inputs.
         constexpr int kN = 1024;
+        int overflow_class = 0; // separate counter for visibility; not gated
         for (int i = 0; i < kN; ++i) {
-            const double x = rng.log_uniform(1e-200, 1e200);
-            const double y = rng.uniform(-50.0, 50.0);
-            record(s, x, y, sf64_powr(x, y), mpfr_ref_powr(x, y));
+            const double x = rng.log_uniform(1e-100, 1e100);
+            const double y = rng.uniform(-3.0, 3.0);
+            const double got = sf64_powr(x, y);
+            const double expect = mpfr_ref_powr(x, y);
+            if (std::isinf(got) || std::isinf(expect) || got == 0.0 || expect == 0.0)
+                overflow_class++;
+            record(s, x, y, got, expect);
         }
+        std::printf("  powr sweep: %d/%d samples reached overflow/underflow class\n",
+                    overflow_class, kN);
         results.push_back(s);
     }
 

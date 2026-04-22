@@ -52,9 +52,11 @@ repos:
         files: ^(include|src|tests|fuzz|bench)/.*\.(h|cpp)$
 
   # Mechanical guard for the "no hidden host-FPU dependency" rule in
-  # CLAUDE.md. Scans src/*.{cpp,h} (src/sleef/ excluded — the sanctioned
-  # carve-out) for libm calls, cmath/fenv includes, __builtin_ FP
-  # intrinsics, int↔double casts, and fp-contract escape pragmas.
+  # CONTRIBUTING.md. Scans every .cpp/.h under src/ (no carve-out) for
+  # libm calls, cmath/fenv includes, __builtin_ FP intrinsics,
+  # int↔double casts, fp-contract escape pragmas, and raw FP
+  # comparisons (literal-RHS as well as DD-field / sf64_fabs / dd_to_d
+  # variable-RHS variants).
   # Runs on every commit that touches src/ and in CI via prek.
   - repo: local
     hooks:
@@ -64,3 +66,19 @@ repos:
         language: system
         pass_filenames: false
         files: ^src/.*\.(cpp|h)$
+
+  # Verify every numeric sweep-window claim in README.md (e.g.
+  # `x ∈ [1e-100, 1e100]`) appears as adjacent (lo, hi) arguments in
+  # the test source. Fires when README and tests/mpfr/test_mpfr_diff.cpp
+  # / tests/test_coverage_mpfr.cpp / tests/test_transcendental_1ulp.cpp
+  # drift apart — exactly the failure mode the reviewer caught with the
+  # "x ∈ [1e-100, 1e100]" pow-xbig claim that the test wasn't actually
+  # sampling.
+  - repo: local
+    hooks:
+      - id: readme-claim-parity
+        name: README sweep-window claims match test source
+        entry: scripts/check_readme_claim_parity.py
+        language: system
+        pass_filenames: false
+        files: '^(README\.md|tests/.*\.cpp)$'
