@@ -88,6 +88,18 @@ if(SOFT_FP64_BUILD_BENCH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/CMakeList
     add_subdirectory(bench)
 endif()
 
+# AdaptiveCpp Metal SSCP external-fp64 adapter — opt-in. When enabled,
+# stages a flat directory of soft-fp64 sources + forwarders ready to be
+# passed as -DACPP_METAL_EXTERNAL_FP64_DIR when configuring AdaptiveCpp.
+# See adapters/acpp_metal/README.md for the full integration contract.
+# Does not produce a conventional archive; install-smoke's sf64_*-only
+# ABI grep is unaffected.
+option(SOFT_FP64_BUILD_ACPP_METAL_ADAPTER
+       "Stage sources for the AdaptiveCpp Metal SSCP external-fp64 adapter" OFF)
+if(SOFT_FP64_BUILD_ACPP_METAL_ADAPTER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/adapters/acpp_metal/CMakeLists.txt")
+    add_subdirectory(adapters/acpp_metal)
+endif()
+
 # -----------------------------------------------------------------------------
 # Install, export set, find_package + pkg-config integration.
 #

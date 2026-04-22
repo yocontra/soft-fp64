@@ -5,6 +5,22 @@
 // regressions are out of scope here (test_sqrt_fma_exact.cpp covers
 // that); we're looking for sanitizer findings, traps, NaN-payload bugs,
 // and qualitative divergences (e.g., sqrt(+inf) returning a finite value).
+//
+// Why 2^20 is the ULP budget (not the BIT_EXACT release tier of 0 ULP):
+//   sf64_sqrt and sf64_fma are contracted BIT_EXACT vs the host FPU —
+//   precision regressions are gated by test_sqrt_fma_exact.cpp against
+//   host std::sqrt / std::fma, and by the TestFloat / MPFR oracle
+//   stacks. This fuzz target is a CRASH-HUNT, not a precision oracle:
+//   it chases sanitizer findings, UB-hit subnormal paths, NaN-payload
+//   corruption, wild-pointer scribbles, and qualitative IEEE-754
+//   invariant breaks (sqrt(+inf) finite, fma(NaN,*,*) non-NaN, etc.).
+//   A 0-ULP budget would duplicate test_sqrt_fma_exact.cpp's work while
+//   also firing on legitimate platform libm jitter (some older libm
+//   builds return an FMA oracle that drifts 1 ULP under specific
+//   rounding-mode regimes) — neither outcome is useful here. The 2^20
+//   budget exists purely to catch "result shape completely wrong"
+//   regressions that escape the structural invariant checks above;
+//   exact-bit grading lives in test_sqrt_fma_exact.cpp.
 
 #include <soft_fp64/soft_f64.h>
 

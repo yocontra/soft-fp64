@@ -45,6 +45,7 @@ extern "C" {
 // symbols. The linker is the ground truth for the sf64_* ABI.
 double sf64_sin(double);
 double sf64_cos(double);
+void sf64_sincos(double, double*, double*);
 double sf64_tan(double);
 double sf64_asin(double);
 double sf64_acos(double);
@@ -203,6 +204,7 @@ inline double ref_rootn_si(double x, long n) {
 // escape hatch. New tiers require a public spec entry — not a tolerance bump
 // to paper over a regression.
 enum class Tier : int64_t {
+    BIT_EXACT = 0,
     U10 = 4,
     U35 = 8,
     GAMMA = 1024,
@@ -212,6 +214,7 @@ enum class Tier : int64_t {
 // typed `Tier` values, NOT `int64_t` — assigning a raw integer (or a sentinel
 // like `numeric_limits<int64_t>::max()`) to a `Tier` argument is a compile
 // error.
+constexpr Tier BIT_EXACT = Tier::BIT_EXACT;
 constexpr Tier U10 = Tier::U10;
 constexpr Tier U35 = Tier::U35;
 constexpr Tier GAMMA = Tier::GAMMA;
@@ -443,18 +446,40 @@ int main() {
     // a range. MPFR permits tighter oracles (e.g. *pi variants, exp10) so we
     // extend coverage where possible.
     //
-    // KNOWN-BUGGY REGIONS (found by exploratory MPFR runs; tracked for a
-    // future sf64 fix — do not sweep here until fixed):
-    //   sf64_sinh(x < 0)   — sign/overflow path regression
-    //   sf64_cbrt(subnormal) — returns NaN on denorm_min
-    //   sf64_fmod, sf64_remainder — repeated-subtraction loop fails for
-    //                              |x/y| > ~96
+    // Honest out-of-range notes (no silent skips — each is either covered by
+    // another test or documented as out-of-scope for 1.0):
+    //   sf64_sinh(|x| > 709.78): boundary bug in the large-|x| branch
+    //     misclassifies sinh's overflow at exp's overflow; tracked in TODO.md.
+    //     The shipped claim ≤8 ULP is on |x| ∈ [1e-4, 20], which fits the
+    //     symmetric sweep below.
 
     // --- Trig (forward): U10 ---------------------------------------------
     results.push_back(
         sweep1_log("sin", U10, [](double x) { return sf64_sin(x); }, mpfr_sin, 1e-6, 100.0, true));
     results.push_back(
         sweep1_log("cos", U10, [](double x) { return sf64_cos(x); }, mpfr_cos, 1e-6, 100.0, true));
+    // sincos: independent U10 oracle for both outputs against MPFR. The
+    // consistency-only check in test_transcendental_1ulp.cpp (sincos vs
+    // sf64_sin/sf64_cos) can't catch a joint reduction bug that shifts both
+    // legs the same way; MPFR is the real referee. Same seed for s and c so
+    // both sweeps hit the identical input corpus — any per-leg discrepancy
+    // must be a reduction / reconstruction bug in the sincos path itself.
+    results.push_back(sweep1_log(
+        "sincos-s", U10,
+        [](double x) {
+            double s, c;
+            sf64_sincos(x, &s, &c);
+            return s;
+        },
+        mpfr_sin, 1e-6, 100.0, true, 0x51C05ULL));
+    results.push_back(sweep1_log(
+        "sincos-c", U10,
+        [](double x) {
+            double s, c;
+            sf64_sincos(x, &s, &c);
+            return c;
+        },
+        mpfr_cos, 1e-6, 100.0, true, 0x51C05ULL));
     results.push_back(
         sweep1_log("tan", U35, [](double x) { return sf64_tan(x); }, mpfr_tan, 1e-6, 1.5, true));
     results.push_back(sweep1_log(
@@ -483,10 +508,8 @@ int main() {
         "atan2pi", U10, [](double y, double x) { return sf64_atan2pi(y, x); }, mpfr_atan2pi));
 
     // --- Hyperbolic: U10/U35 ---------------------------------------------
-    // sinh restricted to positive domain to avoid the negative-x regression
-    // (see KNOWN-BUGGY REGIONS above).
     results.push_back(sweep1_log(
-        "sinh", U35, [](double x) { return sf64_sinh(x); }, mpfr_sinh, 1e-4, 20.0, false));
+        "sinh", U35, [](double x) { return sf64_sinh(x); }, mpfr_sinh, 1e-4, 20.0, true));
     results.push_back(sweep1_log(
         "cosh", U10, [](double x) { return sf64_cosh(x); }, mpfr_cosh, 1e-4, 20.0, true));
     results.push_back(sweep1_log(
@@ -542,9 +565,10 @@ int main() {
         -50.0, 50.0));
     results.push_back(sweep_pown("pown", U35));
     results.push_back(sweep_rootn("rootn", U35));
-    // cbrt restricted away from subnormals (see KNOWN-BUGGY REGIONS).
+    // cbrt across the full double range including subnormals.
     results.push_back(sweep1_log(
-        "cbrt", U10, [](double x) { return sf64_cbrt(x); }, mpfr_cbrt, 1e-300, 1e300, true));
+        "cbrt", U10, [](double x) { return sf64_cbrt(x); }, mpfr_cbrt,
+        std::numeric_limits<double>::denorm_min(), 1e300, true));
 
     // --- Error / gamma: GAMMA tier (impl is not DD-tight) ----------------
     results.push_back(
@@ -571,16 +595,17 @@ int main() {
         "lgamma", GAMMA, [](double x) { return sf64_lgamma(x); }, mpfr_lngamma, 3.0, 1e4, false));
 
     // --- fmod / remainder -----------------------------------------------
-    // Exact integer-arithmetic ops: no rounding and no transcendental
-    // reduction, so the expected tier is 0 ULP against MPFR. We gate them at
-    // U10 (≤4 ULP) rather than a hypothetical BIT_EXACT band to keep the
-    // tier enum small; any observed drift from 0 would be a real bug.
+    // Binary long-division (no float rounding, no transcendental reduction):
+    // the Doxygen contract is "Exact". Gated at BIT_EXACT — any drift from
+    // 0 ULP against MPFR is a real bug, not a tier-fit issue. Sweep ranges
+    // are wide enough that the quotient bit-count reaches ~2^50, well past
+    // any loop-termination edge.
     results.push_back(sweep2_uniform(
-        "fmod", U10, [](double x, double y) { return sf64_fmod(x, y); }, mpfr_fmod, -16.0, 16.0,
-        1.0, 16.0));
+        "fmod", BIT_EXACT, [](double x, double y) { return sf64_fmod(x, y); }, mpfr_fmod, -1e15,
+        1e15, 1.0, 1e10));
     results.push_back(sweep2_uniform(
-        "remainder", U10, [](double x, double y) { return sf64_remainder(x, y); }, mpfr_remainder,
-        -16.0, 16.0, 1.0, 16.0));
+        "remainder", BIT_EXACT, [](double x, double y) { return sf64_remainder(x, y); },
+        mpfr_remainder, -1e15, 1e15, 1.0, 1e10));
 
     // --- hypot ----------------------------------------------------------
     results.push_back(sweep2_uniform(

@@ -562,8 +562,9 @@ double sf64_atan2pi(double y, double x);
  */
 
 /** @brief Hyperbolic sine. @param x @return `sinh(x)`.
- *  @details Measured worst-case **≤8 ULP** (u35 tier) on `[1e-4, 20]`.
- *  `sinh(±0) = ±0`, `sinh(±inf) = ±inf`. Overflow → `±inf`. NaN → NaN. */
+ *  @details Worst-case **≤8 ULP** (u35 tier) on `|x| ∈ [1e-4, 20]`
+ *  (symmetric sweep vs MPFR). `sinh(±0) = ±0`, `sinh(±inf) = ±inf`.
+ *  Overflow → `±inf`. NaN → NaN. */
 double sf64_sinh(double x);
 
 /** @brief Hyperbolic cosine. @param x @return `cosh(x)`.
@@ -650,11 +651,12 @@ double sf64_log1p(double x);
  */
 
 /** @brief General power `x^y` (IEEE `pow`). @param x base @param y exponent
- *  @details Classified under the **u35 tier** (≤8 ULP) over the bounded
- *  region tested by `tests/mpfr/test_mpfr_diff.cpp`:
- *    - `x ∈ [1e-6, 1e6], |y| ≤ 50`         → measured ≤3 ULP
- *    - `x ∈ [1e-100, 1e100], |y| ≤ 5`      → measured ≤2 ULP
- *    - `x ∈ [1e-6, 1e3], |y| ≤ 100`        → measured ≤6 ULP
+ *  @details Classified under the **u35 tier** (≤8 ULP) — gated uniformly
+ *  at ≤8 ULP by `tests/mpfr/test_mpfr_diff.cpp` across three overlapping
+ *  bounded windows covering the validated domain:
+ *    - `x ∈ [1e-6, 1e6],    |y| ≤ 50`     (moderate)
+ *    - `x ∈ [1e-100, 1e100], |y| ≤ 5`     (x wide, y modest)
+ *    - `x ∈ [1e-6, 1e3],    |y| ≤ 100`    (x modest, y wide)
  *  Outside these windows — specifically the "near-unit base × huge
  *  exponent" corner (`x ∈ [0.5, 2], |y| ≳ 200`) — ULP drifts to ~40 because
  *  `logk_dd` evaluates its tail polynomial on `x².hi` as a plain double,

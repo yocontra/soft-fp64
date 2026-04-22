@@ -98,6 +98,30 @@ extern "C" double __acpp_sscp_soft_f64_add(double a, double b) {
 That keeps vendor-specific naming where it belongs (in the vendor's
 frontend) and lets the library stay generic.
 
+### AdaptiveCpp Metal backend (bundled adapter)
+
+For the AdaptiveCpp Metal SSCP path specifically — used by downstream
+GPU consumers on Apple Silicon, where the GPU lacks native fp64 —
+soft-fp64 ships a ready-made adapter
+at `adapters/acpp_metal/`. It stages the full `sf64_*` source tree plus
+one-line forwarders for every required `__acpp_sscp_soft_f64_*`
+primitive and the optional `__acpp_sscp_*_f64` math surface, ready to
+be globbed into AdaptiveCpp's libkernel bitcode. Opt in at configure
+time:
+
+```bash
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DSOFT_FP64_BUILD_ACPP_METAL_ADAPTER=ON
+cmake --build build --target soft_fp64_acpp_metal_stage
+# then: -DACPP_METAL_EXTERNAL_FP64_DIR=$(pwd)/build/adapters/acpp_metal/staged
+```
+
+The adapter does not add public ABI — it forwards to `sf64_*`, never
+reimplements. See `adapters/acpp_metal/README.md` for the pinned
+AdaptiveCpp branch/SHA, the full symbol-coverage table, and the
+end-to-end integration contract.
+
 ## Precision guarantees
 
 Every bound below is **CI-gated** against a 200-bit MPFR oracle by the
@@ -109,13 +133,13 @@ Tiers: `BIT_EXACT` (0 ULP), `U10 = 4 ULP`, `U35 = 8 ULP`, `GAMMA = 1024 ULP`.
 
 | Category | Examples | Tier | Range / oracle |
 |---|---|---|---|
-| Arithmetic | `add`, `sub`, `mul`, `div`, `rem`, `fma`, `sqrt`, `remainder`, `fmod` | **BIT_EXACT** | host FPU + TestFloat vectors + `test_arithmetic_exact.cpp`, `test_sqrt_fma_exact.cpp` |
+| Arithmetic | `add`, `sub`, `mul`, `div`, `rem`, `fma`, `sqrt`, `remainder`, `fmod` | **BIT_EXACT** | host FPU + TestFloat vectors + `test_arithmetic_exact.cpp`, `test_sqrt_fma_exact.cpp`; `fmod` / `remainder` also 0-ULP vs MPFR in `test_mpfr_diff.cpp` |
 | Conversion | `i{8,16,32,64} ↔ f64`, `u{8,16,32,64} ↔ f64`, `f32 ↔ f64` | **BIT_EXACT** | `test_convert_widths.cpp`; exhaustive 2³² `f32 → f64 → f32` round-trip |
-| Comparison / classification | `fcmp` (all 16 IEEE-754 predicates), `isnan`, `isinf`, `isfinite`, `fpclassify`, `signbit` | **BIT_EXACT** | TestFloat vectors + `test_compare_all_predicates.cpp` |
-| Rounding | `floor`, `ceil`, `trunc`, `rint`, `round`, `nearbyint`, `ldexp`, `frexp`, `ilogb`, `logb` | **BIT_EXACT** | `test_rounding_edges.cpp` |
-| Transcendentals (u10) | `sin`, `cos`, `asin`, `acos`, `atan`, `exp`, `exp2`, `exp10`, `expm1`, `log`, `log2`, `log10`, `log1p`, `cbrt`, `cosh`, `acosh`, `atanh`, `rootn` | **U10** ≤ 4 ULP | `test_mpfr_diff.cpp` |
+| Comparison / classification | `fcmp` (all 16 IEEE-754 predicates), `isnan`, `isinf`, `isfinite`, `isnormal`, `signbit`, `fabs`, `copysign` | **BIT_EXACT** | TestFloat vectors + `test_compare_all_predicates.cpp` |
+| Rounding | `floor`, `ceil`, `trunc`, `rint`, `round`, `fract`, `modf`, `ldexp`, `frexp`, `ilogb`, `logb` | **BIT_EXACT** | `test_rounding_edges.cpp` |
+| Transcendentals (u10) | `sin`, `cos`, `asin`, `acos`, `atan`, `exp`, `exp2`, `exp10`, `expm1`, `log`, `log2`, `log10`, `log1p`, `cbrt`, `cosh`, `acosh`, `atanh` | **U10** ≤ 4 ULP | `test_mpfr_diff.cpp` |
 | Transcendentals (u35) | `tan`, `atan2`, `sinh`, `tanh`, `asinh`, `sinpi`, `cospi`, `tanpi`, `asinpi`, `acospi`, `atanpi`, `atan2pi` | **U35** ≤ 8 ULP | `test_mpfr_diff.cpp` |
-| `pow` / `powr` / `pown` | `pow(x, y)`, `powr(x, y)`, `pown(x, n)` | **U35** ≤ 8 ULP, bounded region | three overlapping windows, see note |
+| `pow` / `powr` / `pown` / `rootn` | `pow(x, y)`, `powr(x, y)`, `pown(x, n)`, `rootn(x, n)` | **U35** ≤ 8 ULP, bounded region | three overlapping windows, see note |
 | `erf` | `erf(x)` | **GAMMA** ≤ 1024 ULP | `[-5, 5]`, `test_mpfr_diff.cpp` |
 | `erfc` | `erfc(x)` | **GAMMA** ≤ 1024 ULP | `[-5, 27]` (full active range incl. deep tail) |
 | `tgamma` | `tgamma(x)` | **GAMMA** ≤ 1024 ULP | `[0.5, 170]` (through the overflow boundary) |
