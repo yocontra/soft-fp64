@@ -150,3 +150,38 @@ set(SOFT_FP64_ACPP_METAL_STAGED_DIR "${SF64_STAGE_DIR}" CACHE PATH
     "Absolute path to the staged fp64 source directory to pass as ACPP_METAL_EXTERNAL_FP64_DIR when configuring AdaptiveCpp." FORCE)
 
 message(STATUS "soft-fp64 ACPP Metal adapter: stage dir = ${SF64_STAGE_DIR}")
+
+# ----------------------------------------------------------------------------
+# Link-smoke target: compiles the two forwarder TUs against the main
+# soft_fp64 library and produces a non-installed static archive. Its
+# only job is to prove that every sf64_* entry point the forwarders
+# reference actually resolves, and that every advertised
+# __acpp_sscp_*_f64 / __acpp_sscp_soft_f64_* symbol is defined.
+#
+# The archive is deliberately NOT exported, NOT installed, and does NOT
+# feed the install-smoke ABI grep — its forwarder symbols would (by
+# design) violate the sf64_*-only rule for the installed archive.
+# ----------------------------------------------------------------------------
+add_library(soft_fp64_acpp_metal_forwarders STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/acpp_metal_primitives.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/acpp_metal_math.cpp")
+target_link_libraries(soft_fp64_acpp_metal_forwarders
+    PRIVATE soft_fp64::soft_fp64)
+target_compile_options(soft_fp64_acpp_metal_forwarders PRIVATE
+    -ffp-contract=off -fno-math-errno)
+set_target_properties(soft_fp64_acpp_metal_forwarders PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+
+# ctest-visible link smoke. Runs nm against the freshly built archive
+# and asserts a representative set of the advertised symbol surface is
+# present. Failure here means either the forwarders failed to compile,
+# or a symbol listed in adapters/acpp_metal/README.md's coverage table
+# silently dropped off the surface.
+find_program(NM_EXECUTABLE NAMES nm llvm-nm)
+if(NM_EXECUTABLE AND SOFT_FP64_BUILD_TESTS)
+    add_test(NAME test_acpp_metal_adapter_link
+        COMMAND ${CMAKE_COMMAND}
+            -DNM=${NM_EXECUTABLE}
+            -DARCHIVE=$<TARGET_FILE:soft_fp64_acpp_metal_forwarders>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_forwarder_symbols.cmake)
+endif()

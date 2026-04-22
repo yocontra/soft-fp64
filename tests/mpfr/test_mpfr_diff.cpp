@@ -81,6 +81,7 @@ double sf64_erf(double);
 double sf64_erfc(double);
 double sf64_tgamma(double);
 double sf64_lgamma(double);
+double sf64_lgamma_r(double, int*);
 double sf64_fmod(double, double);
 double sf64_remainder(double, double);
 double sf64_hypot(double, double);
@@ -447,11 +448,10 @@ int main() {
     // extend coverage where possible.
     //
     // Honest out-of-range notes (no silent skips — each is either covered by
-    // another test or documented as out-of-scope for 1.0):
-    //   sf64_sinh(|x| > 709.78): boundary bug in the large-|x| branch
-    //     misclassifies sinh's overflow at exp's overflow; tracked in TODO.md.
-    //     The shipped claim ≤8 ULP is on |x| ∈ [1e-4, 20], which fits the
-    //     symmetric sweep below.
+    // another test or documented as out-of-scope):
+    //   sf64_sinh boundary window |x| ∈ (709.78, 710.4758]: exercised by the
+    //     fixed-point "sinh-edge" spot-check below (gated at U35). The random
+    //     sweep stays on |x| ∈ [1e-4, 20] where the main claim lives.
 
     // --- Trig (forward): U10 ---------------------------------------------
     results.push_back(
@@ -510,6 +510,19 @@ int main() {
     // --- Hyperbolic: U10/U35 ---------------------------------------------
     results.push_back(sweep1_log(
         "sinh", U35, [](double x) { return sf64_sinh(x); }, mpfr_sinh, 1e-4, 20.0, true));
+    // sinh boundary: fixed-point sweep across the (709.78, 710.4758] window
+    // where the large-|x| branch switches to exp(a - ln2) to avoid overflow.
+    {
+        Stats sb;
+        sb.name = "sinh-edge";
+        sb.tier = U35;
+        const double pts[] = {709.79, 710.0, 710.4, 710.48};
+        for (double p : pts) {
+            record(sb, p, 0.0, sf64_sinh(p), ref1(mpfr_sinh, p));
+            record(sb, -p, 0.0, sf64_sinh(-p), ref1(mpfr_sinh, -p));
+        }
+        results.push_back(sb);
+    }
     results.push_back(sweep1_log(
         "cosh", U10, [](double x) { return sf64_cosh(x); }, mpfr_cosh, 1e-4, 20.0, true));
     results.push_back(sweep1_log(
@@ -593,6 +606,18 @@ int main() {
     // tests/experimental/.
     results.push_back(sweep1_log(
         "lgamma", GAMMA, [](double x) { return sf64_lgamma(x); }, mpfr_lngamma, 3.0, 1e4, false));
+    // lgamma_r shares the same log-|Γ| magnitude path as lgamma; gate its
+    // magnitude at the same GAMMA tier over the same zero-free subrange.
+    // The out-parameter sign is trivially +1 on [3, 1e4] (Γ is positive
+    // there); sign coverage across the full sign-flipping domain lives in
+    // tests/test_transcendental_1ulp.cpp.
+    results.push_back(sweep1_log(
+        "lgamma_r", GAMMA,
+        [](double x) {
+            int sgn = 0;
+            return sf64_lgamma_r(x, &sgn);
+        },
+        mpfr_lngamma, 3.0, 1e4, false));
 
     // --- fmod / remainder -----------------------------------------------
     // Binary long-division (no float rounding, no transcendental reduction):

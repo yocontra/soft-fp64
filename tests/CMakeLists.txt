@@ -14,7 +14,10 @@ set(SF64_CORE_TESTS
     test_rounding_edges
     test_classify
     test_hypot_scaling
+    test_reentrancy
 )
+
+find_package(Threads REQUIRED)
 
 foreach(_test IN LISTS SF64_CORE_TESTS)
     set(_src "${CMAKE_CURRENT_SOURCE_DIR}/${_test}.cpp")
@@ -22,6 +25,9 @@ foreach(_test IN LISTS SF64_CORE_TESTS)
         add_executable(${_test} ${_test}.cpp)
         target_link_libraries(${_test} PRIVATE soft_fp64::soft_fp64)
         target_compile_options(${_test} PRIVATE -ffp-contract=off -fno-math-errno)
+        if(${_test} STREQUAL "test_reentrancy")
+            target_link_libraries(${_test} PRIVATE Threads::Threads)
+        endif()
         add_test(NAME ${_test} COMMAND ${_test})
     else()
         message(STATUS "Core test pending: ${_test}.cpp")
