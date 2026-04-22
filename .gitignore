@@ -14,6 +14,12 @@ docs/
 *.ll
 compile_commands.json
 
+# Bench runner JSON outputs (bench_soft_fp64 --json, compare.py inputs).
+# The committed baseline lives in bench/baseline.json; everything else
+# is a local run artifact.
+/current*.json
+/bench-*.json
+
 # Vendored comparison libraries (cloned by bench/fetch_external.sh).
 bench/external/
 

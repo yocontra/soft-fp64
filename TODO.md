@@ -3,6 +3,31 @@
 Single source of truth for open work. Items closed at 1.0 / 1.1 are
 recorded in `CHANGELOG.md`, not here.
 
+## Pre-1.1 — in flight
+
+Currently uncommitted in the working tree on top of commit `c3c1b90`.
+These are polish on the 1.1 fenv / adapter surface that was bundled
+into commit `580c781`; they land before the 1.1 tag.
+
+- **Fenv raise-site coverage across arithmetic / convert / sqrt-fma.**
+  `src/arithmetic.cpp`, `src/convert.cpp`, `src/sqrt_fma.cpp` add
+  INEXACT / UNDERFLOW / OVERFLOW / INVALID raise sites at the
+  IEEE-754 §7 locations; `src/internal_fenv.h` now carries a
+  two-raise-path scheme (a hot inline accumulator macro plus the
+  out-of-line `SF64_FE_RAISE`) so the INEXACT fast path does not
+  touch TLS storage on every op. Before commit: run the TestFloat
+  `fl2` column gate over the full 7.16M-vector corpus under
+  `SOFT_FP64_FENV=tls` and confirm every expected flag bit is
+  raised — the CI cell exists but needs a green pass after the
+  new raise sites land.
+- **ACPP Metal adapter staging picks up `SOFT_FP64_FENV_MODE`.**
+  `adapters/acpp_metal/CMakeLists.txt` and
+  `cmake/rewrite_sleef_include.cmake` need to propagate the
+  top-level `SOFT_FP64_FENV` build option into the staged source
+  tree. Without it the adapter's Metal bitcode always compiles with
+  `SOFT_FP64_FENV_MODE=0` (disabled) regardless of the core
+  configuration, so fenv flag raising silently no-ops on Metal.
+
 ## Post-1.1
 
 ### Numerical
