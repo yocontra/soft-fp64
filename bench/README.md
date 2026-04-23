@@ -1,8 +1,7 @@
 # soft-fp64 bench harness
 
-Self-contained microbench + regression gate for the public `sf64_*` entry
-points. No external deps — compiles with the library, runs anywhere the
-library runs.
+Microbench + regression gate for the public `sf64_*` entry points. No
+external dependencies.
 
 ## Build
 
@@ -118,14 +117,12 @@ PY
 ```
 
 Record in the commit message which machine produced the numbers
-(e.g. "Apple M3 Max, macOS 15.2, clang 18.1.8, Release"). Future you
-will want that context.
+(e.g. "Apple M3 Max, macOS 15.2, clang 18.1.8, Release").
 
 ## Comparative bench (`bench_compare`)
 
 `bench_compare` measures `sf64_*` against two vendored reference soft-float
-libraries so honest relative-perf claims can be made against something other
-than ourselves:
+libraries, giving an external baseline for relative-perf claims:
 
 - [Berkeley SoftFloat 3e](http://www.jhauser.us/arithmetic/SoftFloat.html) —
   the canonical bit-exact IEEE-754 reference. C API. Core IEEE ops only

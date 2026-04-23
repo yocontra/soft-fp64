@@ -13,9 +13,9 @@ This library is a clean, header-plus-object C++17 implementation of the full
 IEEE-754 binary64 surface — arithmetic, comparisons, full width-matrix
 conversions, sqrt, fma, rounding, classification, and transcendentals — built
 entirely on 32/64-bit integer bit operations. There is no hidden dependency
-on the host FPU. You can drop it into any frontend that can call an
-`extern "C"` symbol and get correct `double` behavior on a device that has
-never seen one.
+on the host FPU. Any frontend that can emit a call to an `extern "C"`
+symbol can get correct `double` behavior on a device without a hardware
+fp64 unit.
 
 ## Where this is useful
 

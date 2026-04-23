@@ -1,14 +1,11 @@
 # Contributing to soft-fp64
 
-Bug-exact integer fp64 has narrow tolerance for shortcuts. Read this
-before changing anything in `src/`, `tests/`, `bench/`, or
+Read this before changing anything in `src/`, `tests/`, `bench/`, or
 `.github/workflows/`.
 
-The full integrity contract — what is allowed, what is forbidden, and
-what the automated guards check — lives in this file so every
-contributor sees the same rules across machines. Local agent
-configuration (Claude Code, Cursor, etc.) may add to these rules but
-not relax them.
+The integrity contract lives in this file so every contributor sees
+the same rules across machines. Local agent configuration (Claude
+Code, Cursor, etc.) may add to these rules but not relax them.
 
 ## Build + test
 
@@ -73,16 +70,16 @@ only allowed exception).
 
 ## Integrity rules
 
-These rules exist because the alternative — silently weakening tests,
-laundering numerical regressions through "refactor" commits, or
-stretching the definition of "passing" — destroys the value of the
-test suite. Reviewers, human or AI, are expected to enforce them.
+Silently weakening tests, laundering numerical regressions through
+"refactor" commits, or stretching the definition of "passing" destroys
+the value of the test suite. Reviewers (human or AI) are expected to
+enforce the rules below.
 
 **Never, under any justification:**
 
 - Widen a ULP tolerance, replace `ASSERT_EQ(bits, ...)` with
   `ASSERT_NEAR` / `EXPECT_DOUBLE_EQ` / `approx_equal`, or flatten NaN
-  payloads / signed-zero in a comparator. Bit-exact is bit-exact.
+  payloads / signed-zero in a comparator.
 - Modify, comment out, skip, `GTEST_SKIP`, `DISABLED_`-prefix, `#if
   0`, `if (on_ci()) return`, or delete rows from TestFloat / MPFR
   vectors. Move cases between test files to escape a tighter tier.
@@ -181,6 +178,6 @@ source.
   compile/sanitizer/ctest args in `CMakeLists.txt`.
 - Ban "should work" / "should be bit-exact" — run it.
 
-When something is broken you can't fix, say so explicitly ("this
-failure is real, I don't have a fix, leaving the test red") and stop.
-Landing green CI at the cost of a weaker suite is the worst outcome.
+When something is broken you can't fix, say so and stop. Landing
+green CI at the cost of a weaker suite is worse than leaving the test
+red.

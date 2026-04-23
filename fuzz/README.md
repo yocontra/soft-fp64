@@ -15,12 +15,12 @@ and narrow-int conversions, plus an exhaustive `f32 <-> f64` round-trip test.
 | `fuzz_narrow_int.cpp` | libFuzzer | i8/i16/u8/u16 ↔ f64 conversions, saturation/rounding edges. |
 | `exhaustive_f32_f64_roundtrip.cpp` | plain ctest | Every 32-bit f32 pattern through `sf64_from_f32` → `sf64_to_f32`. |
 
-The fuzz targets are **crash-hunts**, not accuracy graders — ULP regressions
-are covered by `tests/test_arithmetic_exact.cpp`, `tests/test_sqrt_fma_exact.cpp`,
-`tests/test_transcendental_1ulp.cpp`, and the MPFR differential harness.
-libFuzzer's job here is to surface traps, sanitizer findings, and qualitative
-divergences (NaN<->finite, sign-of-inf, wildly different output) under
-coverage-guided input mutation.
+These targets are crash-hunts, not accuracy graders. ULP regressions
+are covered by `tests/test_arithmetic_exact.cpp`,
+`tests/test_sqrt_fma_exact.cpp`, `tests/test_transcendental_1ulp.cpp`,
+and the MPFR differential harness. libFuzzer surfaces traps, sanitizer
+findings, and qualitative divergences (NaN↔finite, sign-of-inf, wildly
+different output) under coverage-guided input mutation.
 
 ## Building
 

@@ -380,28 +380,52 @@ consumers pinned to an older soft-fp64 need a
 
 ### PyTorch MPS backend
 
-**The gap.** PyTorch's MPS backend on Apple Silicon GPU explicitly
-errors on `torch.float64` — "double precision not supported on
-MPS". Real scientific users hit this; MPS adoption for
-numerics-heavy workflows is bottlenecked by the gap.
+**The gap — and what this library does NOT fix.** PyTorch's MPS
+backend rejects `torch.float64` at tensor-construction time via a
+~10-line check in `aten/src/ATen/mps/EmptyTensor.cpp` (and a mirror
+in `aten/src/ATen/native/mps/OperationUtils.mm`). The actual user
+pain — library code (sklearn, scipy, HF Diffusers, PyTorch's own
+`WeightedRandomSampler`, GitHub issues #125844 / #148670 / the
+#77764 op tracker) incidentally allocating `torch.double` and
+crashing — is **not a missing-kernels problem**. It's a hard reject
+before dispatch ever runs. Almost nobody is asking to *train* in
+fp64 on MPS; they're asking not to crash when an upstream library
+defaults to it.
 
-**The fit.** Register a soft-fp64-backed dispatch path for fp64
-tensors in `aten/src/ATen/native/mps/`. The MPS backend's
-device-side Metal kernels link against the soft-fp64 Metal bitcode
-archive (same artifact as the AdaptiveCpp integration) and call
-`sf64_*` in place of a hardware fp64 op.
+The 99% fix is to delete the rejects and route fp64 ops to
+PyTorch's existing `cpu_fallback()` (`aten/src/ATen/mps/
+MPSFallback.mm`), gated on `PYTORCH_ENABLE_MPS_FP64=1`. On Apple
+Silicon's unified memory, MPS↔CPU "copies" are near-metadata-only,
+so CPU fp64 runs at ~1–3× hardware-fp32 speed. Device-side
+soft-fp64 in Metal runs ~300× slower than fp32. **For the actual
+user population, CPU fallback is both simpler and faster than this
+library.** Soft-fp64 is the wrong tool for that PR — it doesn't
+belong in it.
 
-**PR shape.** ATen MPS dispatch table changes; Metal bitcode build
-step in PyTorch's CMake; opt-in `PYTORCH_MPS_ENABLE_FP64=1` env flag
-so users consciously accept the ~300× slowdown vs fp32; tests under
-`test/test_mps.py` covering the fp64 code paths; a caveat in the
-MPS docs naming the trade-off.
+**Where soft-fp64 does fit.** The narrow case where a hot Metal
+kernel wants a handful of fp64 ops in its inner loop and cannot
+afford the CPU-roundtrip scheduling cost — e.g. a fused reduction
+inside a larger Metal graph where the rest of the work stays on
+GPU. That's a real but small user base, well downstream of the
+CPU-fallback PR.
 
-**Hurdles.** soft-fp64 is slow — users need to understand the cost
-before opting in. PR needs a clear benchmark showing fp32-native vs
-fp64-soft throughput. The Metal bitcode artifact is the same one
-AdaptiveCpp consumes; this PR lands after the AdaptiveCpp
-integration stabilizes the packaging story.
+**PR shape (Tier 2, soft-fp64 on device).**  Only pursue after the
+CPU-fallback PR lands and a concrete consumer asks for it. Rewrite
+the raw-Metal kernels under `aten/src/ATen/native/mps/kernels/` to
+carry fp64 as `uint2` (MSL has no `double` syntax — you cannot
+just link soft-fp64 bitcode into an MSL kernel that declares a
+`double` variable; every affected kernel needs its types rewritten)
+and call `sf64_*`. Opt-in `PYTORCH_MPS_FP64_DEVICE=1`. Consumes the
+same Metal bitcode archive as AdaptiveCpp.
+
+**Hurdles (Tier 2).** Of the ~50 op files under
+`aten/src/ATen/native/mps/`, 34 go through MPSGraph (Apple's
+closed-source graph compiler) and 16 use raw Metal kernels.
+MPSGraph has no fp64 and cannot be patched from the outside — so
+even Tier 2 only covers the raw-Metal subset. Ops reachable only
+via MPSGraph permanently route through CPU fallback regardless.
+This caps the device-side soft-fp64 surface to roughly 1/3 of MPS
+op coverage. Factor that into any pitch.
 
 ### Mesa (OpenCL / Vulkan compute on fp64-less drivers)
 

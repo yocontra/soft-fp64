@@ -130,11 +130,11 @@ the `caps.has_fp64 == false` path and execute through soft-fp64.
 
 - This adapter does **not** add new public ABI. The only symbols it
   exports are the `__acpp_sscp_*` forwarders, and those live exclusively
-  in the Metal libkernel bitcode — not in `libsoft_fp64.a`.
-- Bug fixes in soft-fp64 propagate automatically: the adapter forwards,
-  never reimplements.
-- Precision / rounding-mode / IEEE-flags contracts match soft-fp64
-  exactly. Adapter does not introduce drift.
+  in the Metal libkernel bitcode (not in `libsoft_fp64.a`).
+- Bug fixes in soft-fp64 propagate through the forwarders without
+  adapter changes.
+- Precision, rounding-mode, and IEEE-flag contracts match soft-fp64
+  exactly.
 - Subject to the same integrity rules as the core library (see
   `CLAUDE.md`): no host-FPU dependency, no tolerance widening, and no
   out-of-tree fork divergence from upstream AdaptiveCpp without

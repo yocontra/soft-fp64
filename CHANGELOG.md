@@ -4,8 +4,8 @@ All notable changes to `soft-fp64` land here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Every numeric claim in this file traces to a specific CI-gated sweep —
-no prose-only bounds. See `README.md` for the full precision table.
+Every numeric claim in this file traces to a specific CI-gated sweep.
+See `README.md` for the full precision table.
 
 ## [1.1.0] — unreleased
 
