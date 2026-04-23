@@ -344,39 +344,71 @@ consumer's tree, not here. The current `adapters/acpp_metal/`
 subtree is a transitional prototype — it exits this repo once
 AdaptiveCpp merges the upstream equivalent.
 
-Each item below is a PR (or PR series) to a downstream project:
-what they're stuck on today, where `sf64_*` drops in, the PR shape,
-and the known hurdles.
+Each item below is a concrete wedge into a downstream project —
+what they're stuck on, where `sf64_*` fits, the PR shape, and the
+real hurdles.
+
+What this library adds over Berkeley SoftFloat (the established
+softfloat oracle that Mesa `float64.glsl`, compiler-rt, and libgcc
+`soft-fp` all descend from): (a) **transcendentals** — `sin`,
+`cos`, `log`, `exp`, `pow`, `erf`, etc., ported from SLEEF and
+gated against MPFR-200-bit; SoftFloat has no transcendentals —
+and (b) a packaged library with a stable C ABI. For arithmetic /
+convert / compare / classify, Berkeley SoftFloat is already the
+canonical oracle and this library doesn't clear a higher bar;
+integration pitches that depend on "better arithmetic oracle" are
+not viable and aren't listed.
 
 ### AdaptiveCpp (SYCL implementation)
 
-**The gap.** AdaptiveCpp's SSCP (Single-Source Single-Compiler-Pass)
-emitter targets Metal and WebGPU, neither of which has hardware
-fp64. Today AdaptiveCpp emits trap-stubs for `__acpp_sscp_*_f64`
-builtins on those targets — SYCL code using `double` compiles but
-traps at runtime.
+**The gap.** AdaptiveCpp's SSCP emitter hard-rejects `double` at
+IR-to-MSL translation
+(`src/compiler/llvm-to-backend/metal/Emitter.cpp:1432`, error:
+`Double type is not supported on Metal GPU`). The runtime
+reports `device_support_aspect::fp64 → false`
+(`src/runtime/metal/metal_hardware_manager.cpp:348`). The Metal
+libkernel file `src/libkernel/sscp/metal/math.cpp` ships 87
+`_f32` entries and zero `_f64` entries — an empty slot, not
+missing bodies. Upstream is receptive: issue #864 lists "float64
+emulation" under optional features, PR #1961 ("Metal Backend",
+merged Feb 2026) scoped fp64 out as a follow-up, and PR #1980
+(merged Feb 2026) added the `device_support_aspect::fp64`
+plumbing. No in-flight fp64 PR.
 
-**The fit.** The `sf64_*` ABI is exactly the contract the SSCP
-emitter needs to call: `extern "C" double sf64_add(double, double)`
-etc. are one-line forwarders from each `__acpp_sscp_*_f64` builtin.
-Metal bitcode + linker wiring is already prototyped in this repo's
-`adapters/acpp_metal/`.
+**The fit.** Two parts:
 
-**PR shape.** Move the contents of `adapters/acpp_metal/` into
-AdaptiveCpp's SSCP extension tree (roughly
-`src/runtime/sscp/extensions/soft_fp64/`). Add soft-fp64 via
-`FetchContent` + `find_package(soft_fp64 1.1 CONFIG REQUIRED)`;
-version-pin so AdaptiveCpp tracks our release cadence. Forwarders
-for the whole `__acpp_sscp_*_f64` set, plus `__acpp_sscp_*_r_f64`
-once the non-RNE surface lands, plus `__acpp_sscp_lgamma_r_f64`
-once `sf64_lgamma_r` lands core-side. Delete
-`adapters/acpp_metal/` from this repo in the same release that
-AdaptiveCpp merges the upstream integration.
+1. **libkernel bodies.** One-line forwarders from each
+   `__acpp_sscp_*_f64` builtin (~70 entries declared in
+   `include/hipSYCL/sycl/libkernel/sscp/builtins/math.hpp` et
+   al.) to the corresponding `sf64_*` symbol. Metal bitcode +
+   linker wiring already prototyped in `adapters/acpp_metal/`.
+2. **IR-level fp64 legalization pass.** MSL has no `double` at
+   the language level — `Emitter.cpp` rejects `llvm::DoubleTy`
+   as a source-language error, not a missing-builtin link
+   error. Before the emitter runs, every `DoubleTy` value
+   (loads, stores, GEPs, function args, phis) must be rewritten
+   to `i64` (or `uint2`) and every fp64 IR op (`fadd`, `fmul`,
+   `fcmp`, `fptosi`, `sitofp`, `fpext`, `fptrunc`) outlined into
+   a call to the `sf64_*` ABI. This is a whole LLVM pass
+   (similar to LLVM's `SoftFloat` lowering but retargeted to
+   `sf64_*`). AdaptiveCpp does not do this rewrite today, and
+   it is the actual scope of the integration — the forwarders
+   alone are not enough.
 
-**Hurdles.** License (MIT, compatible with AdaptiveCpp BSD-3). CMake
-option naming in the AdaptiveCpp tree. Release-cadence coupling —
-consumers pinned to an older soft-fp64 need a
-`soft_fp64_VERSION_MIN_REQUIRED` compile guard.
+**PR shape.** (1) Pre-Emitter LLVM pass lowering all `DoubleTy`
+values + fp64 IR ops to `i64` + `sf64_*` calls. Register
+forwarders in the Metal `remapped_llvm_math_builtins` table
+(`src/compiler/llvm-to-backend/metal/LLVMToMetal.cpp:60-112`).
+(2) Move `adapters/acpp_metal/` staged bodies into AdaptiveCpp's
+SSCP extension tree under roughly
+`src/runtime/sscp/extensions/soft_fp64/`. (3) Opt-in CMake
+option. (4) Once merged, delete `adapters/acpp_metal/` from this
+repo.
+
+**Hurdles.** License (MIT → AdaptiveCpp BSD-3, compatible).
+Release-cadence coupling — consumers pinned to an older
+soft-fp64 need a `soft_fp64_VERSION_MIN_REQUIRED` compile guard.
+The IR-legalization pass is multi-week work, not a weekend port.
 
 ### PyTorch MPS backend
 
@@ -427,96 +459,39 @@ via MPSGraph permanently route through CPU fallback regardless.
 This caps the device-side soft-fp64 surface to roughly 1/3 of MPS
 op coverage. Factor that into any pitch.
 
-### Mesa (OpenCL / Vulkan compute on fp64-less drivers)
+### libclc fp64 transcendentals (for Mesa rusticl softfp64)
 
-**The gap.** Mesa ships a partial softfloat in
-`src/util/softfloat.c` for drivers that lack hardware fp64 (Lima,
-Panfrost, Freedreno on older chips, the LLVMpipe CPU rasterizer on
-WASM targets). It covers basic arithmetic; no transcendentals.
-Mesa's OpenCL compute path rejects fp64 kernels on these drivers.
+**The gap.** Mesa's runtime fp64-in-shader path
+(`src/compiler/glsl/float64.glsl` → `nir_lower_doubles` in
+`src/compiler/nir/nir_lower_double_ops.c`) already covers
+bit-correct fp64 arithmetic on shader-side — it's SoftFloat-
+derived and mature (MR !4142, MR !38088 merged). But Mesa has no
+softfloat transcendentals for OpenCL fp64 kernels; those are
+expected to come from libclc, and the libclc fp64-on-softfp path
+is incomplete. Rusticl's softfp64 has open correctness bugs
+rooted in this gap: GitLab #10822 (wrong values on Asahi),
+#15195 (denorm handling in cl_khr_fp64 emulation), #14192 (iris
+subgroup perf). Panfrost is the one driver with an unmet
+softfp64 request (`pan_screen.c` doesn't set `caps->doubles`);
+Freedreno/ir3 already ships softfp64
+(`freedreno_screen.c:506`), LLVMpipe runs on CPU with hardware
+fp64, Lima has no compute path.
 
-**The fit.** Mesa's NIR lowering can emit calls to `sf64_*` when
-targeting a device without fp64. Arithmetic calls map 1:1; the
-transcendentals close the gap Mesa's own softfloat doesn't cover.
-This project's arithmetic core is a port of Mesa's own softfloat
-hardened for IEEE-754 bit-exactness, so the numerical pedigree is
-compatible.
+**The fit.** Port the SLEEF-derived transcendental bodies from
+`src/sleef/` into libclc as the `cl_khr_fp64` backend for
+softfp64 devices. Additive where Mesa has a real gap.
 
-**PR shape.** Add soft-fp64 as a Meson subproject under
-`subprojects/`. NIR lowering pass that rewrites fp64 ops as
-`sf64_*` calls when the target caps declare no fp64. Wire Mesa's
-OpenCL CTS cell to run against the lowered path.
+**PR shape.** Libclc patches under `generic/lib/math/` as C
+source, parameterized on fp64 representation. No soft-fp64
+in-tree dependency in Mesa required — port as first-party libclc
+code (license-compatible: libclc is Apache-2.0-with-LLVM-
+exception, our SLEEF port is Boost-1.0).
 
-**Hurdles.** Meson build-system glue (we ship CMake; Mesa is
-all-Meson). License compatibility is fine (both MIT). Coordinating
-with Mesa's softfloat maintainer to avoid stepping on in-tree work
-— option (b) fallback is to contribute the IEEE-754 hardening and
-transcendentals directly into `src/util/softfloat.c` as Mesa-native
-code, at the cost of duplicating our maintenance.
-
-### WebGPU compiler stack (Tint, Naga)
-
-**The gap.** WGSL has no `f64` type. Dawn (Tint) and wgpu-rs (Naga)
-translate other shader languages to WGSL; any fp64 op gets
-rejected or truncated. This blocks any SYCL-on-WebGPU / CUDA-on-
-WebGPU translation story that cares about numerics.
-
-**The fit.** Cross-compile soft-fp64 to WGSL (or to SPIR-V that
-Tint/Naga can link in). The WebGPU runtime links the prebuilt
-module; the shader-translator lowers fp64 ops to `sf64_*` calls
-against it.
-
-**PR shape.** New tooling in this repo's `tools/` (or a separate
-`soft-fp64-wgsl` repo) that cross-compiles the `sf64_*` surface
-to WGSL via SLANG or direct translation. Tint/Naga PRs add a
-"link soft-fp64 WGSL module" codegen option and a command-line
-flag to opt in.
-
-**Hurdles.** WGSL function-call performance is worse than MSL or
-SPIR-V direct codegen — needs a benchmark to confirm the penalty
-is bearable. WGSL has no `u128`, so the `sf64_fma` path depends on
-the portable 64×64→128 change tracked under Post-1.1.
-
-### compiler-rt / libgcc softfloat builtins
-
-**The gap.** LLVM compiler-rt's `__divdf3` / `__muldf3` /
-`__adddf3` / `__subdf3` / `__truncdfsf2` / `__extendsfdf2` /
-`__floatdidf` / `__fixdfdi` and the parallel libgcc set are the
-softfloat builtins that fire on targets without hardware fp64
-(RISC-V without F/D extension, ARMv6-M, WASM with softfp, some
-embedded). They're correct but not TestFloat/MPFR-verified; known
-corner-case bugs (subnormal rounding, NaN payload) have been
-reported against both over the years.
-
-**The fit.** Either (a) contribute per-function bit-exactness
-patches into `compiler-rt/lib/builtins/` — cite TestFloat / MPFR
-findings per commit — or (b) propose a toolchain build flag
-`--with-external-softfloat=soft_fp64` that routes compiler-rt's
-softfloat calls to our ABI via name-mangling shims.
-
-**PR shape.** Start with (a): small, reviewable commits each fixing
-a specific corner-case against a TestFloat vector, with the vector
-embedded in the commit message. Scale to (b) only after a few (a)
-PRs land and reviewers ask for a full swap.
-
-**Hurdles.** compiler-rt is strict C, no C++ — our bodies need a C
-port for option (a). Option (b) is smaller code but politically
-larger (a build-time swap of fundamental runtime). Licensing fine
-(compiler-rt is Apache-2.0-with-LLVM-exception; MIT compatible).
-
-### Intel SYCL / DPC++ / oneAPI (speculative)
-
-**The gap.** Parallel to AdaptiveCpp: Intel's SYCL implementation
-may at some point target WebGPU or Metal via the same SPIR-V
-lowering path. Intel HW has fp64 so this is not an immediate pain
-point; tracked only to have a name when a consumer shows up.
-
-**PR shape.** Mirror the AdaptiveCpp integration in `llvm/libclc/`
-or Intel's SYCL runtime once a concrete target ships.
-
-**Hurdles.** Intel's SYCL team has its own softfloat story via
-SPIRV-LLVM-Translator; coordination needed to avoid duplication.
-Don't invest PR time here until a specific Intel consumer asks.
+**Hurdles.** Libclc's fp64 story is historically minimal;
+reviewers may push back on a large transcendental port from an
+external project. Landing incrementally (one transcendental
+family per MR, with the rusticl bug it fixes cited) is the
+practical path.
 
 ---
 
