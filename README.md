@@ -17,6 +17,46 @@ on the host FPU. You can drop it into any frontend that can call an
 `extern "C"` symbol and get correct `double` behavior on a device that has
 never seen one.
 
+## Why this is cool
+
+Each of these is a real, currently-blocked code path with a named maintainer
+on the other side — not a hypothetical. The `sf64_*` ABI is the missing
+piece; the integration work for each is tracked in `TODO.md`.
+
+- **SYCL on Apple GPUs.** AdaptiveCpp's Metal SSCP emitter compiles fp64
+  today but traps at runtime — there's no hardware double on Apple GPUs.
+  With soft-fp64 linked into libkernel bitcode, `double` kernels run
+  instead of crashing. Slow (~300× vs fp32), but *runs*.
+- **`torch.float64` on MPS.** PyTorch's MPS backend errors on fp64 today.
+  A dispatch path backed by this library turns that error into a (slow)
+  working tensor, unblocking scientific / geospatial / simulation code
+  that can't quantize to fp32.
+- **WebGPU with real doubles.** WGSL has no `f64`. Cross-compiling
+  `sf64_*` to a linkable WGSL/SPIR-V module lets Tint and Naga lower
+  fp64 ops to calls against it — the first viable path to `double`
+  precision in a browser shader.
+- **Mesa drivers without fp64.** Lima, Panfrost, Freedreno on older
+  chips, and LLVMpipe-on-WASM all reject fp64 OpenCL kernels today.
+  Mesa's in-tree softfloat covers arithmetic but no transcendentals;
+  this library covers the full surface and shares Mesa's own arithmetic
+  pedigree (hardened for bit-exactness).
+- **Tighter compiler-rt / libgcc softfloat.** The `__adddf3` /
+  `__muldf3` / `__divdf3` builtins that fire on RISC-V without D,
+  ARMv6-M, and WASM-softfp are correct on average but have known
+  subnormal / NaN-payload corner cases. This library is TestFloat-
+  and MPFR-verified bit-for-bit across all 7.16M conformance vectors;
+  the fixes are portable back.
+- **A bit-exact reference.** Every op is gated against Berkeley
+  TestFloat 3e plus a 200-bit MPFR oracle in CI, with the full
+  precision table published. That makes it usable as an independent
+  oracle for anyone else's softfloat — including the ones above when
+  they debug divergences.
+
+The shared shape across all of these: a language or toolchain has
+`double` in its type system, the target hardware doesn't, and the
+compiler's options today are *trap*, *truncate*, or *refuse*.
+soft-fp64 gives them a fourth option.
+
 ## Who this is for
 
 - **Compiler / runtime authors** retargeting language front-ends to hardware
