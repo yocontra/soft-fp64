@@ -11,7 +11,7 @@ and exhaustive `f32 ↔ f64` round-trip is checked on every CI run.
 If you believe you have found a real vulnerability — for example undefined
 behavior on specific inputs, a buffer overflow in a helper, or a signed
 overflow trip under UBSan — please report it by opening a GitHub issue or
-emailing **ericbombhax@gmail.com**. Bug reports from fuzzer corpora are
+emailing **yo@contra.io**. Bug reports from fuzzer corpora are
 welcome.
 
 ## Supported Versions
