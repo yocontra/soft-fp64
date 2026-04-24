@@ -237,16 +237,15 @@ inline double ref_rootn_si(double x, long n) {
 // `MPFR_RNDA` is round-away-from-zero for every value, not just ties, so
 // it is not the right mode either.
 //
-// Emulation: compute the op at 200-bit precision with RNDN, then apply a
-// double-rounding idiom — first to 54 bits with RNDN (one extra bit so
-// the halfway case is representable exactly), then to 53 bits with RNDA.
-// At non-tie points this is equivalent to RNDN on the final step; at
-// exact halfway ties the extra bit is 1 and RNDA pushes the 53-bit
-// result away from zero, which is precisely RNA semantics. The
-// intermediate 54-bit value is exact relative to the 53-bit target,
-// so there is no double-rounding error — this is the standard
-// technique for emulating ties-away rounding with a library that
-// lacks it natively.
+// Emulation: compute the op at the arithmetic scratch precision
+// (3300 bits — see ARITH_PREC) with RNDN, then detect exact halfway
+// ties against the f64 grid. Fetch both RNDU and RNDD neighbors of the
+// scratch value and compute |v − RNDD| and |RNDU − v| at MPFR
+// precision. If the two distances compare equal, the scratch is an
+// exact tie and RNA must pick the magnitude-larger neighbor
+// (ties-away); otherwise RNDN is already the correct answer for RNA
+// since non-ties round identically under both. See `finalize_d` below
+// for the implementation.
 //
 // Subnormal handling: `mpfr_subnormalize` with the chosen rounding mode
 // forces the f64 exponent range so an RNA-subnormal result matches the
