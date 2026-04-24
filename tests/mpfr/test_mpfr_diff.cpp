@@ -28,6 +28,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+#include "soft_fp64/rounding_mode.h"
 #include "soft_fp64/soft_f64.h"
 
 #include <mpfr.h>
@@ -85,6 +86,27 @@ double sf64_lgamma_r(double, int*);
 double sf64_fmod(double, double);
 double sf64_remainder(double, double);
 double sf64_hypot(double, double);
+
+// Rounding-mode-explicit arithmetic / sqrt / fma / convert / rint surface.
+// Used by the per-mode bit-exact sweeps. `_r(mode, ...)` wrappers are defined
+// on the public header and every five-way mode must match MPFR bit-for-bit.
+double sf64_add_r(sf64_rounding_mode, double, double);
+double sf64_sub_r(sf64_rounding_mode, double, double);
+double sf64_mul_r(sf64_rounding_mode, double, double);
+double sf64_div_r(sf64_rounding_mode, double, double);
+double sf64_sqrt_r(sf64_rounding_mode, double);
+double sf64_fma_r(sf64_rounding_mode, double, double, double);
+float sf64_to_f32_r(sf64_rounding_mode, double);
+double sf64_from_f32(float);
+int8_t sf64_to_i8_r(sf64_rounding_mode, double);
+int16_t sf64_to_i16_r(sf64_rounding_mode, double);
+int32_t sf64_to_i32_r(sf64_rounding_mode, double);
+int64_t sf64_to_i64_r(sf64_rounding_mode, double);
+uint8_t sf64_to_u8_r(sf64_rounding_mode, double);
+uint16_t sf64_to_u16_r(sf64_rounding_mode, double);
+uint32_t sf64_to_u32_r(sf64_rounding_mode, double);
+uint64_t sf64_to_u64_r(sf64_rounding_mode, double);
+double sf64_rint_r(sf64_rounding_mode, double);
 }
 
 namespace {
@@ -192,6 +214,402 @@ inline double ref_rootn_si(double x, long n) {
     mpfr_init2(rm, ORACLE_PREC);
     mpfr_set_d(xm, x, MPFR_RNDN);
     mpfr_rootn_si(rm, xm, n, MPFR_RNDN);
+    const double r = mpfr_get_d(rm, MPFR_RNDN);
+    mpfr_clear(xm);
+    mpfr_clear(rm);
+    return r;
+}
+
+// ---------- Per-mode MPFR oracles -----------------------------------------
+//
+// For the bit-exact `sf64_*_r(mode, ...)` surface every one of the five
+// IEEE-754 rounding attributes (RNE, RTZ, RUP, RDN, RNA) must match MPFR
+// exactly. Four of the five map onto MPFR's own rounding modes:
+//
+//   SF64_RNE -> MPFR_RNDN   (nearest, ties to even)
+//   SF64_RTZ -> MPFR_RNDZ   (toward zero)
+//   SF64_RUP -> MPFR_RNDU   (toward +infinity)
+//   SF64_RDN -> MPFR_RNDD   (toward -infinity)
+//
+// The fifth, round-to-nearest-ties-away, has no direct MPFR equivalent
+// outside `mpfr_rint` (the `MPFR_RNDNA=-1` pseudo-mode is only honored
+// inside `mpfr_rint`/`mpfr_round` — mpfr.h itself flags it "DON'T USE").
+// `MPFR_RNDA` is round-away-from-zero for every value, not just ties, so
+// it is not the right mode either.
+//
+// Emulation: compute the op at 200-bit precision with RNDN, then apply a
+// double-rounding idiom — first to 54 bits with RNDN (one extra bit so
+// the halfway case is representable exactly), then to 53 bits with RNDA.
+// At non-tie points this is equivalent to RNDN on the final step; at
+// exact halfway ties the extra bit is 1 and RNDA pushes the 53-bit
+// result away from zero, which is precisely RNA semantics. The
+// intermediate 54-bit value is exact relative to the 53-bit target,
+// so there is no double-rounding error — this is the standard
+// technique for emulating ties-away rounding with a library that
+// lacks it natively.
+//
+// Subnormal handling: `mpfr_subnormalize` with the chosen rounding mode
+// forces the f64 exponent range so an RNA-subnormal result matches the
+// hardware-representable bit pattern.
+inline mpfr_rnd_t sf_to_mpfr_direct(sf64_rounding_mode m) {
+    switch (m) {
+    case SF64_RNE:
+        return MPFR_RNDN;
+    case SF64_RTZ:
+        return MPFR_RNDZ;
+    case SF64_RUP:
+        return MPFR_RNDU;
+    case SF64_RDN:
+        return MPFR_RNDD;
+    case SF64_RNA:
+        // Caller handles RNA via double-rounding; this branch is only hit
+        // on the input side where RNDN is always exact for `set_d`.
+        return MPFR_RNDN;
+    }
+    return MPFR_RNDN;
+}
+
+// Finalize a high-precision MPFR scratch into a bit-exact double under
+// the requested soft-fp64 rounding mode. MPFR's `mpfr_get_d` already
+// implements the correct IEEE-754 rounding for every mode MPFR supports
+// (RNDN/RNDZ/RNDU/RNDD) including subnormal / overflow handling.
+//
+// For RNA (round-to-nearest-ties-away): start from MPFR's RNDN answer,
+// which is correct everywhere except exact halfway ties. If the value
+// is a tie AND RNDN chose a neighbor with a smaller magnitude than the
+// other candidate, swap to the other neighbor (RNA picks away-from-zero
+// on ties).
+//
+// Tie detection: compute RNDU and RNDD. The value is a tie iff
+//   |v - RNDU| == |v - RNDD|
+// exactly, computed at MPFR precision so the comparison is not tainted
+// by f64 rounding hazard.
+inline double finalize_d(mpfr_t rm, sf64_rounding_mode m) {
+    if (m == SF64_RNA) {
+        const double rne = mpfr_get_d(rm, MPFR_RNDN);
+        // For overflow, infinities, NaN: RNDN already gives the right
+        // answer and there is no "other neighbor" to swap to.
+        if (std::isnan(rne) || std::isinf(rne))
+            return rne;
+        const double down = mpfr_get_d(rm, MPFR_RNDD);
+        const double up = mpfr_get_d(rm, MPFR_RNDU);
+        if (down == up)
+            return rne; // exact representable
+        // Midpoint check at MPFR precision: exact tie iff |v-up| == |v-down|.
+        const mpfr_prec_t p = mpfr_get_prec(rm);
+        mpfr_t dm, um, ld, lu;
+        mpfr_init2(dm, p);
+        mpfr_init2(um, p);
+        mpfr_init2(ld, p);
+        mpfr_init2(lu, p);
+        mpfr_set_d(dm, down, MPFR_RNDN);
+        mpfr_set_d(um, up, MPFR_RNDN);
+        mpfr_sub(ld, rm, dm, MPFR_RNDN);
+        mpfr_abs(ld, ld, MPFR_RNDN);
+        mpfr_sub(lu, um, rm, MPFR_RNDN);
+        mpfr_abs(lu, lu, MPFR_RNDN);
+        const int cmp = mpfr_cmp(ld, lu);
+        mpfr_clear(dm);
+        mpfr_clear(um);
+        mpfr_clear(ld);
+        mpfr_clear(lu);
+        if (cmp != 0)
+            return rne; // not a tie — RNDN is the RNA answer
+        // Exact halfway tie: pick the neighbor with larger magnitude.
+        return (std::fabs(up) > std::fabs(down)) ? up : down;
+    }
+    return mpfr_get_d(rm, sf_to_mpfr_direct(m));
+}
+
+// Per-mode arithmetic / sqrt / fma references. Inputs are exact doubles,
+// so `mpfr_set_d` with any rounding mode is exact; the mode only applies
+// at the final `finalize_d` step.
+//
+// Precision: the 200-bit `ORACLE_PREC` used for transcendentals is not
+// enough for arithmetic on widely-separated f64 operands.
+//
+//   add/sub/mul/div/sqrt: exp span is at most 2^1023 / 2^-1074 = ~2100
+//   bits; 2200 bits suffices to preserve every bit of the exact result.
+//
+//   fma: the worst case is `a*b + c` with |a*b| near 2^-2148 (two
+//   subnormals multiplied) and |c| near 2^1023. The exact value spans
+//   ~3171 bits; a 3300-bit scratch captures it losslessly. `mpfr_fma`
+//   computes the fused operation at the scratch precision, then our
+//   `finalize_d` rounds to 53 bits under the requested mode.
+//
+// Using the same precision for every arithmetic ref keeps the oracle
+// uniform at the cost of some memory per call — fine for a test binary.
+constexpr mpfr_prec_t ARITH_PREC = 3300;
+
+// IEEE 754-2008 §6.3 signed-zero rule for exactly-zero results from
+// addition and subtraction. The rule depends on whether the zero came
+// from cancellation of nonzero operands or from direct zero-operand
+// arithmetic, and on the rounding mode. `mpfr_add` / `mpfr_sub` always
+// yields a `+0` mpfr_t on cancellation regardless of mode, so the
+// oracle must fix up the sign post-hoc.
+//
+// We distinguish three cases (all require `mpfr_zero_p(rm)` true):
+//   1) Both operands are literal zero (signed 0). Sign of the result
+//      follows host FPU semantics under each mode — this is the
+//      standard `0 ± 0` rule and must be computed from the operand
+//      signs directly. See the case tables in `oracle_zero_sign_*`
+//      below.
+//   2) Cancellation of nonzero same-magnitude opposite-sign operands
+//      (e.g. `x - x` with finite nonzero x): result sign is +0 for
+//      RNE/RTZ/RUP, -0 for RDN.
+//   3) Underflow to zero (MPFR's `rm` is not zero but `rm` rounds to
+//      zero in f64): NOT handled here — MPFR's get_d already preserves
+//      the underflow sign.
+//
+// Call `apply_signed_zero_add` or `apply_signed_zero_sub` with the
+// pre-rounding MPFR zero flag.
+
+// Sign of `a + b` under mode `m` when both operands are literal zero.
+// Host FPU semantics table (verified against Apple / Intel FPU):
+//   RNE/RTZ/RUP: sign = sign_a AND sign_b (result -0 iff both -0)
+//   RDN:         sign = sign_a OR sign_b  (result +0 iff both +0)
+inline double zero_plus_zero_sign(double a, double b, sf64_rounding_mode m) {
+    const int sa = std::signbit(a) ? 1 : 0;
+    const int sb = std::signbit(b) ? 1 : 0;
+    const int s = (m == SF64_RDN) ? (sa | sb) : (sa & sb);
+    return s ? -0.0 : 0.0;
+}
+
+inline double apply_signed_zero_add(double r, mpfr_srcptr rm, double a, double b,
+                                    sf64_rounding_mode m) {
+    if (mpfr_zero_p(rm) == 0)
+        return r; // not exact zero — MPFR rounding was correct
+    // Case 1: both operands literal zero.
+    if (a == 0.0 && b == 0.0)
+        return zero_plus_zero_sign(a, b, m);
+    // Case 2: cancellation of nonzero operands.
+    return (m == SF64_RDN) ? -0.0 : 0.0;
+}
+
+inline double apply_signed_zero_sub(double r, mpfr_srcptr rm, double a, double b,
+                                    sf64_rounding_mode m) {
+    if (mpfr_zero_p(rm) == 0)
+        return r;
+    if (a == 0.0 && b == 0.0)
+        return zero_plus_zero_sign(a, -b, m); // x - y == x + (-y)
+    return (m == SF64_RDN) ? -0.0 : 0.0;
+}
+
+// fma: the fused product `a*b` is the first addend; the second is `c`.
+// When the exact fma result is zero:
+//   - If BOTH addends are literal zero (product AND c are zero), use
+//     the zero-plus-zero sign table on (sign(a)^sign(b), sign(c)).
+//   - Else cancellation rule: +0 (else) / -0 (RDN).
+inline double apply_signed_zero_fma(double r, mpfr_srcptr rm, double a, double b, double c,
+                                    sf64_rounding_mode m) {
+    if (mpfr_zero_p(rm) == 0)
+        return r;
+    const bool product_is_zero = (a == 0.0) || (b == 0.0);
+    const bool c_is_zero = (c == 0.0);
+    if (product_is_zero && c_is_zero) {
+        // Sign of the product: xor of sign bits (literal zero operands).
+        const int product_sign = (std::signbit(a) ? 1 : 0) ^ (std::signbit(b) ? 1 : 0);
+        const double product_zero = product_sign ? -0.0 : 0.0;
+        return zero_plus_zero_sign(product_zero, c, m);
+    }
+    return (m == SF64_RDN) ? -0.0 : 0.0;
+}
+
+inline double ref_add_r(double a, double b, sf64_rounding_mode m) {
+    mpfr_t am, bm, rm;
+    mpfr_init2(am, ARITH_PREC);
+    mpfr_init2(bm, ARITH_PREC);
+    mpfr_init2(rm, ARITH_PREC);
+    mpfr_set_d(am, a, MPFR_RNDN);
+    mpfr_set_d(bm, b, MPFR_RNDN);
+    mpfr_add(rm, am, bm, MPFR_RNDN);
+    double r = finalize_d(rm, m);
+    r = apply_signed_zero_add(r, rm, a, b, m);
+    mpfr_clear(am);
+    mpfr_clear(bm);
+    mpfr_clear(rm);
+    return r;
+}
+inline double ref_sub_r(double a, double b, sf64_rounding_mode m) {
+    mpfr_t am, bm, rm;
+    mpfr_init2(am, ARITH_PREC);
+    mpfr_init2(bm, ARITH_PREC);
+    mpfr_init2(rm, ARITH_PREC);
+    mpfr_set_d(am, a, MPFR_RNDN);
+    mpfr_set_d(bm, b, MPFR_RNDN);
+    mpfr_sub(rm, am, bm, MPFR_RNDN);
+    double r = finalize_d(rm, m);
+    r = apply_signed_zero_sub(r, rm, a, b, m);
+    mpfr_clear(am);
+    mpfr_clear(bm);
+    mpfr_clear(rm);
+    return r;
+}
+inline double ref_mul_r(double a, double b, sf64_rounding_mode m) {
+    mpfr_t am, bm, rm;
+    mpfr_init2(am, ARITH_PREC);
+    mpfr_init2(bm, ARITH_PREC);
+    mpfr_init2(rm, ARITH_PREC);
+    mpfr_set_d(am, a, MPFR_RNDN);
+    mpfr_set_d(bm, b, MPFR_RNDN);
+    mpfr_mul(rm, am, bm, MPFR_RNDN);
+    const double r = finalize_d(rm, m);
+    mpfr_clear(am);
+    mpfr_clear(bm);
+    mpfr_clear(rm);
+    return r;
+}
+inline double ref_div_r(double a, double b, sf64_rounding_mode m) {
+    mpfr_t am, bm, rm;
+    mpfr_init2(am, ARITH_PREC);
+    mpfr_init2(bm, ARITH_PREC);
+    mpfr_init2(rm, ARITH_PREC);
+    mpfr_set_d(am, a, MPFR_RNDN);
+    mpfr_set_d(bm, b, MPFR_RNDN);
+    mpfr_div(rm, am, bm, MPFR_RNDN);
+    const double r = finalize_d(rm, m);
+    mpfr_clear(am);
+    mpfr_clear(bm);
+    mpfr_clear(rm);
+    return r;
+}
+inline double ref_sqrt_r(double x, sf64_rounding_mode m) {
+    mpfr_t xm, rm;
+    mpfr_init2(xm, ARITH_PREC);
+    mpfr_init2(rm, ARITH_PREC);
+    mpfr_set_d(xm, x, MPFR_RNDN);
+    mpfr_sqrt(rm, xm, MPFR_RNDN);
+    const double r = finalize_d(rm, m);
+    mpfr_clear(xm);
+    mpfr_clear(rm);
+    return r;
+}
+inline double ref_fma_r(double a, double b, double c, sf64_rounding_mode m) {
+    mpfr_t am, bm, cm, rm;
+    mpfr_init2(am, ARITH_PREC);
+    mpfr_init2(bm, ARITH_PREC);
+    mpfr_init2(cm, ARITH_PREC);
+    mpfr_init2(rm, ARITH_PREC);
+    mpfr_set_d(am, a, MPFR_RNDN);
+    mpfr_set_d(bm, b, MPFR_RNDN);
+    mpfr_set_d(cm, c, MPFR_RNDN);
+    mpfr_fma(rm, am, bm, cm, MPFR_RNDN);
+    double r = finalize_d(rm, m);
+    r = apply_signed_zero_fma(r, rm, a, b, c, m);
+    mpfr_clear(am);
+    mpfr_clear(bm);
+    mpfr_clear(cm);
+    mpfr_clear(rm);
+    return r;
+}
+
+// f64 -> f32 under all five modes. `mpfr_get_flt` handles IEEE-754
+// binary32 subnormal / overflow conversion directly under RNDN/RNDZ/
+// RNDU/RNDD. For RNA we start from the RNDN answer (correct everywhere
+// except at exact halfway ties) and swap to the magnitude-larger
+// neighbor only on confirmed ties.
+inline float ref_to_f32_r(double x, sf64_rounding_mode m) {
+    mpfr_t xm;
+    mpfr_init2(xm, ORACLE_PREC);
+    mpfr_set_d(xm, x, MPFR_RNDN);
+    float r;
+    if (m == SF64_RNA) {
+        const float rne = mpfr_get_flt(xm, MPFR_RNDN);
+        if (std::isnan(rne) || std::isinf(rne)) {
+            r = rne;
+        } else {
+            const float down = mpfr_get_flt(xm, MPFR_RNDD);
+            const float up = mpfr_get_flt(xm, MPFR_RNDU);
+            if (down == up) {
+                r = rne;
+            } else {
+                mpfr_t dm, um, ld, lu;
+                mpfr_init2(dm, ORACLE_PREC);
+                mpfr_init2(um, ORACLE_PREC);
+                mpfr_init2(ld, ORACLE_PREC);
+                mpfr_init2(lu, ORACLE_PREC);
+                mpfr_set_flt(dm, down, MPFR_RNDN);
+                mpfr_set_flt(um, up, MPFR_RNDN);
+                mpfr_sub(ld, xm, dm, MPFR_RNDN);
+                mpfr_abs(ld, ld, MPFR_RNDN);
+                mpfr_sub(lu, um, xm, MPFR_RNDN);
+                mpfr_abs(lu, lu, MPFR_RNDN);
+                const int cmp = mpfr_cmp(ld, lu);
+                mpfr_clear(dm);
+                mpfr_clear(um);
+                mpfr_clear(ld);
+                mpfr_clear(lu);
+                if (cmp != 0) {
+                    r = rne;
+                } else {
+                    r = (std::fabs(static_cast<double>(up)) > std::fabs(static_cast<double>(down)))
+                            ? up
+                            : down;
+                }
+            }
+        }
+    } else {
+        r = mpfr_get_flt(xm, sf_to_mpfr_direct(m));
+    }
+    mpfr_clear(xm);
+    return r;
+}
+
+// f64 -> integer under all five modes. MPFR's `mpfr_rint` accepts
+// `MPFR_RNDNA` directly, so RNA routes through that without the
+// double-rounding dance used for f64/f32 targets.
+inline mpfr_rnd_t sf_to_mpfr_int(sf64_rounding_mode m) {
+    switch (m) {
+    case SF64_RNE:
+        return MPFR_RNDN;
+    case SF64_RTZ:
+        return MPFR_RNDZ;
+    case SF64_RUP:
+        return MPFR_RNDU;
+    case SF64_RDN:
+        return MPFR_RNDD;
+    case SF64_RNA:
+        return MPFR_RNDNA;
+    }
+    return MPFR_RNDN;
+}
+
+// Return the MPFR-rounded integer value of `x` under mode `m` as a
+// signed / unsigned long long. Caller is responsible for ensuring `x`
+// is finite and in the destination type's representable range after
+// rounding (see sweep_to_int_r below — it clips).
+inline long long ref_to_llint_r(double x, sf64_rounding_mode m) {
+    mpfr_t xm, rm;
+    mpfr_init2(xm, ORACLE_PREC);
+    mpfr_init2(rm, ORACLE_PREC);
+    mpfr_set_d(xm, x, MPFR_RNDN);
+    mpfr_rint(rm, xm, sf_to_mpfr_int(m));
+    const long long r = mpfr_get_sj(rm, MPFR_RNDZ); // value is already integer
+    mpfr_clear(xm);
+    mpfr_clear(rm);
+    return r;
+}
+inline unsigned long long ref_to_ullint_r(double x, sf64_rounding_mode m) {
+    mpfr_t xm, rm;
+    mpfr_init2(xm, ORACLE_PREC);
+    mpfr_init2(rm, ORACLE_PREC);
+    mpfr_set_d(xm, x, MPFR_RNDN);
+    mpfr_rint(rm, xm, sf_to_mpfr_int(m));
+    const unsigned long long r = mpfr_get_uj(rm, MPFR_RNDZ);
+    mpfr_clear(xm);
+    mpfr_clear(rm);
+    return r;
+}
+
+// sf64_rint oracle: round to integral double. Integer values with
+// magnitude < 2^53 are exactly representable in f64; larger inputs
+// are already integral so the result equals the input.
+inline double ref_rint_r(double x, sf64_rounding_mode m) {
+    mpfr_t xm, rm;
+    mpfr_init2(xm, ORACLE_PREC);
+    mpfr_init2(rm, ORACLE_PREC);
+    mpfr_set_d(xm, x, MPFR_RNDN);
+    mpfr_rint(rm, xm, sf_to_mpfr_int(m));
     const double r = mpfr_get_d(rm, MPFR_RNDN);
     mpfr_clear(xm);
     mpfr_clear(rm);
@@ -525,6 +943,192 @@ void edge_spot_checks() {
     }
 }
 
+// ---------- Per-mode bit-exact sweeps -------------------------------------
+//
+// The `sf64_*_r(mode, ...)` surface must match MPFR bit-for-bit across all
+// five IEEE-754 rounding modes. These sweeps are additive — they do NOT
+// displace the RNE-only sweeps above (the headline `sf64_*` surface is
+// still exercised by the main-entry sweeps). They verify the new 1.1
+// rounding-mode-parameterized surface at the BIT_EXACT tier.
+
+constexpr int N_RAND_MODE = 4096;
+
+struct ModeNameRow {
+    sf64_rounding_mode mode;
+    const char* name;
+};
+constexpr ModeNameRow kModes[5] = {
+    {SF64_RNE, "RNE"}, {SF64_RTZ, "RTZ"}, {SF64_RUP, "RUP"}, {SF64_RDN, "RDN"}, {SF64_RNA, "RNA"},
+};
+
+// Per-sweep row name buffer. Every sweep_* helper reserves a fresh slot so
+// the `Stats.name` pointer stays valid for the full test run.
+constexpr int kMaxModeRows = 128;
+static char g_mode_row_names[kMaxModeRows][40];
+static int g_mode_row_idx = 0;
+inline const char* mode_row_name(const char* op, const char* mode_name) {
+    const int slot = g_mode_row_idx++ % kMaxModeRows;
+    std::snprintf(g_mode_row_names[slot], sizeof(g_mode_row_names[0]), "%s-%s", op, mode_name);
+    return g_mode_row_names[slot];
+}
+
+using SoftBinR = double (*)(sf64_rounding_mode, double, double);
+using OracleBinR = double (*)(double, double, sf64_rounding_mode);
+
+Stats sweep_bin_r(const char* op, sf64_rounding_mode m, const char* mode_name, SoftBinR soft,
+                  OracleBinR oracle, uint64_t seed) {
+    Stats s;
+    s.name = mode_row_name(op, mode_name);
+    s.tier = BIT_EXACT;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND_MODE; ++i) {
+        // Log-uniform across the f64 magnitude range with random sign so
+        // the rounding-path exercise covers cancellation, overflow, and
+        // subnormal boundaries.
+        double a = rng.log_uniform(std::numeric_limits<double>::denorm_min(), 1e150);
+        if (rng.next() & 1)
+            a = -a;
+        double b = rng.log_uniform(std::numeric_limits<double>::denorm_min(), 1e150);
+        if (rng.next() & 1)
+            b = -b;
+        const double got = soft(m, a, b);
+        const double expect = oracle(a, b, m);
+        record(s, a, b, got, expect);
+    }
+    return s;
+}
+
+Stats sweep_sqrt_r(sf64_rounding_mode m, const char* mode_name, uint64_t seed) {
+    Stats s;
+    s.name = mode_row_name("sqrt", mode_name);
+    s.tier = BIT_EXACT;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND_MODE; ++i) {
+        const double x = rng.log_uniform(std::numeric_limits<double>::denorm_min(), 1e300);
+        const double got = sf64_sqrt_r(m, x);
+        const double expect = ref_sqrt_r(x, m);
+        record(s, x, 0.0, got, expect);
+    }
+    return s;
+}
+
+Stats sweep_fma_r(sf64_rounding_mode m, const char* mode_name, uint64_t seed) {
+    Stats s;
+    s.name = mode_row_name("fma", mode_name);
+    s.tier = BIT_EXACT;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND_MODE; ++i) {
+        double a = rng.log_uniform(std::numeric_limits<double>::denorm_min(), 1e100);
+        if (rng.next() & 1)
+            a = -a;
+        double b = rng.log_uniform(std::numeric_limits<double>::denorm_min(), 1e100);
+        if (rng.next() & 1)
+            b = -b;
+        double c = rng.log_uniform(std::numeric_limits<double>::denorm_min(), 1e100);
+        if (rng.next() & 1)
+            c = -c;
+        const double got = sf64_fma_r(m, a, b, c);
+        const double expect = ref_fma_r(a, b, c, m);
+        record(s, a, b, got, expect);
+    }
+    return s;
+}
+
+Stats sweep_to_f32_r(sf64_rounding_mode m, const char* mode_name, uint64_t seed) {
+    Stats s;
+    s.name = mode_row_name("to_f32", mode_name);
+    s.tier = BIT_EXACT;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND_MODE; ++i) {
+        // Sample log-magnitude across full f32 domain with headroom so
+        // the overflow/underflow paths get exercised under each mode.
+        double x = rng.log_uniform(1e-46, 1e40);
+        if (rng.next() & 1)
+            x = -x;
+        const float got = sf64_to_f32_r(m, x);
+        const float expect = ref_to_f32_r(x, m);
+        uint32_t gb, eb;
+        std::memcpy(&gb, &got, 4);
+        std::memcpy(&eb, &expect, 4);
+        s.checked++;
+        // NaN-vs-NaN identity: both NaN collapses to "equal" (soft-fp64
+        // NaN payloads are platform-quiet). Non-NaN must match bitwise.
+        const bool g_nan = std::isnan(got);
+        const bool e_nan = std::isnan(expect);
+        if (g_nan && e_nan)
+            continue;
+        if (gb != eb) {
+            if (s.max_ulp == 0) {
+                s.worst_x = x;
+                s.worst_got = static_cast<double>(got);
+                s.worst_expect = static_cast<double>(expect);
+            }
+            s.max_ulp = 1; // BIT_EXACT tier: any drift fails.
+        }
+    }
+    return s;
+}
+
+// f64->int per-mode. Sample strictly inside `[type_min + 1, type_max - 1]`
+// so that any rounding direction stays representable (no saturation edge).
+// This is an independent test of rounding rules; saturation is covered by
+// the existing `tests/test_rounding_modes.cpp` and the TestFloat sweeps.
+template <typename IntT, IntT (*Fn)(sf64_rounding_mode, double)>
+Stats sweep_to_int_r(const char* type_label, sf64_rounding_mode m, const char* mode_name,
+                     double safe_lo, double safe_hi, bool is_signed, uint64_t seed) {
+    Stats s;
+    char short_op[16];
+    std::snprintf(short_op, sizeof(short_op), "to_%s", type_label);
+    s.name = mode_row_name(short_op, mode_name);
+    s.tier = BIT_EXACT;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND_MODE; ++i) {
+        // Uniform across `[safe_lo, safe_hi]` — the fractional part stays
+        // uniform, which is what drives rounding-direction differences.
+        double x = rng.uniform(safe_lo, safe_hi);
+        if (is_signed && (rng.next() & 1))
+            x = -x;
+        const IntT got = Fn(m, x);
+        IntT expect;
+        if (is_signed) {
+            const long long r = ref_to_llint_r(x, m);
+            expect = static_cast<IntT>(r);
+        } else {
+            const unsigned long long r = ref_to_ullint_r(x, m);
+            expect = static_cast<IntT>(r);
+        }
+        s.checked++;
+        if (got != expect) {
+            if (s.max_ulp == 0) {
+                s.worst_x = x;
+                s.worst_got = static_cast<double>(static_cast<long long>(got));
+                s.worst_expect = static_cast<double>(static_cast<long long>(expect));
+            }
+            s.max_ulp = 1;
+        }
+    }
+    return s;
+}
+
+Stats sweep_rint_r(sf64_rounding_mode m, const char* mode_name, uint64_t seed) {
+    Stats s;
+    s.name = mode_row_name("rint", mode_name);
+    s.tier = BIT_EXACT;
+    LCG rng(seed);
+    for (int i = 0; i < N_RAND_MODE; ++i) {
+        // Log-sample |x| across [1e-4, 1e18] with random sign. Below 2^53
+        // rint has real rounding work; above 2^53 the result equals the
+        // input (already integral). Both regimes are exercised.
+        double x = rng.log_uniform(1e-4, 1e18);
+        if (rng.next() & 1)
+            x = -x;
+        const double got = sf64_rint_r(m, x);
+        const double expect = ref_rint_r(x, m);
+        record(s, x, 0.0, got, expect);
+    }
+    return s;
+}
+
 } // namespace
 
 // ---------- Driver --------------------------------------------------------
@@ -533,6 +1137,55 @@ int main() {
     std::printf("== test_mpfr_diff (MPFR prec=%d) ==\n", static_cast<int>(ORACLE_PREC));
 
     std::vector<Stats> results;
+
+    // --- Per-mode bit-exact sweeps (1.1 `sf64_*_r` surface) ---------------
+    //
+    // Every arithmetic / sqrt / fma / convert / rint op must match MPFR
+    // bit-for-bit under ALL FIVE IEEE-754 rounding modes. Transcendentals
+    // (u10/u35/gamma tiers) stay RNE-only — their precision claim is
+    // defined only for RNE in 1.1, so mode-looping them would not
+    // correspond to any documented contract.
+    //
+    // Seeds are per-row so every (op, mode) cell gets its own corpus;
+    // same op across modes uses related but offset seeds so cross-mode
+    // regressions remain independent signals.
+    std::printf("\n[per-mode bit-exact: sf64_*_r(mode, ...)]\n");
+    for (const auto& mrow : kModes) {
+        results.push_back(sweep_bin_r("add", mrow.mode, mrow.name, sf64_add_r, ref_add_r,
+                                      0xADD0000ULL + mrow.mode));
+        results.push_back(sweep_bin_r("sub", mrow.mode, mrow.name, sf64_sub_r, ref_sub_r,
+                                      0x5B0000ULL + mrow.mode));
+        results.push_back(sweep_bin_r("mul", mrow.mode, mrow.name, sf64_mul_r, ref_mul_r,
+                                      0x70000ULL + mrow.mode));
+        results.push_back(sweep_bin_r("div", mrow.mode, mrow.name, sf64_div_r, ref_div_r,
+                                      0xD1D0000ULL + mrow.mode));
+        results.push_back(sweep_sqrt_r(mrow.mode, mrow.name, 0x57A0000ULL + mrow.mode));
+        results.push_back(sweep_fma_r(mrow.mode, mrow.name, 0xFA0000ULL + mrow.mode));
+        results.push_back(sweep_to_f32_r(mrow.mode, mrow.name, 0xF320000ULL + mrow.mode));
+        results.push_back(sweep_rint_r(mrow.mode, mrow.name, 0x71A0000ULL + mrow.mode));
+        // Integer targets: sample strictly inside the type's representable
+        // range (by 2 units of headroom — enough so any rounding direction
+        // stays in range). Saturation-edge behavior is covered by the
+        // existing `tests/test_rounding_modes.cpp` and TestFloat.
+        results.push_back(sweep_to_int_r<int8_t, sf64_to_i8_r>(
+            "i8", mrow.mode, mrow.name, 0.0, 126.0, /*is_signed=*/true, 0x180000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<int16_t, sf64_to_i16_r>(
+            "i16", mrow.mode, mrow.name, 0.0, 32766.0, true, 0x1160000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<int32_t, sf64_to_i32_r>(
+            "i32", mrow.mode, mrow.name, 0.0, 2147483646.0, true, 0x1320000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<int64_t, sf64_to_i64_r>("i64", mrow.mode, mrow.name, 0.0,
+                                                                 9223372036854775000.0, true,
+                                                                 0x1640000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<uint8_t, sf64_to_u8_r>(
+            "u8", mrow.mode, mrow.name, 0.0, 254.0, /*is_signed=*/false, 0xB80000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<uint16_t, sf64_to_u16_r>(
+            "u16", mrow.mode, mrow.name, 0.0, 65534.0, false, 0xB160000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<uint32_t, sf64_to_u32_r>(
+            "u32", mrow.mode, mrow.name, 0.0, 4294967294.0, false, 0xB320000ULL + mrow.mode));
+        results.push_back(sweep_to_int_r<uint64_t, sf64_to_u64_r>("u64", mrow.mode, mrow.name, 0.0,
+                                                                  18446744073709548000.0, false,
+                                                                  0xB640000ULL + mrow.mode));
+    }
 
     // Input ranges mirror test_transcendental_1ulp where that test validates
     // a range. MPFR permits tighter oracles (e.g. *pi variants, exp10) so we
