@@ -37,6 +37,15 @@ from typing import Any
 SCHEMA_ID = "soft-fp64.bench.v1"
 NOISE_FLOOR_NS = 2.0
 
+# Cheap-op carveout threshold. Ops with a baseline below this get exempted
+# from the percentage gate when `--cheap-op-absolute-budget` is set and the
+# absolute ns/op delta is within that budget. Rationale: on Apple Silicon,
+# `SOFT_FP64_FENV=tls` adds a structural ~5 ns/op from the `__tlv_get_addr`
+# roundtrip at every raise site; on a sub-15 ns op the floor dominates the
+# percentage and the percentage stops being the right signal. Ops at or
+# above this baseline still gate on the percentage only.
+CHEAP_OP_NS_THRESHOLD = 15.0
+
 
 def load_results(path: Path) -> dict[str, dict[str, Any]]:
     """Load a bench JSON file and return {name: result_obj}."""
@@ -90,10 +99,27 @@ def main() -> int:
         default=0.05,
         help="Fractional ns/op change to flag (default 0.05 = 5%%).",
     )
+    parser.add_argument(
+        "--cheap-op-absolute-budget",
+        type=float,
+        default=0.0,
+        help=(
+            "Absolute ns/op budget (default 0.0 = off) that exempts ops with "
+            f"a baseline < {CHEAP_OP_NS_THRESHOLD:.1f} ns from the percentage "
+            "gate, provided abs(current - baseline) <= budget. Ops with a "
+            f"baseline >= {CHEAP_OP_NS_THRESHOLD:.1f} ns always gate on the "
+            "percentage rule. A cheap op whose absolute delta also exceeds "
+            "the budget still reports as a regression."
+        ),
+    )
     args = parser.parse_args()
 
     if args.threshold <= 0:
         sys.stderr.write("error: --threshold must be > 0\n")
+        return 2
+
+    if args.cheap_op_absolute_budget < 0:
+        sys.stderr.write("error: --cheap-op-absolute-budget must be >= 0\n")
         return 2
 
     current = load_results(args.current)
@@ -102,9 +128,12 @@ def main() -> int:
     regressions: list[tuple[str, float, float, float]] = []
     improvements: list[tuple[str, float, float, float]] = []
     within: list[tuple[str, float, float, float]] = []
+    exempted_cheap: list[tuple[str, float, float, float]] = []
     skipped_noise: list[str] = []
     missing_in_current: list[str] = []
     new_ops: list[str] = []
+
+    cheap_budget_enabled = args.cheap_op_absolute_budget > 0.0
 
     for name, base in baseline.items():
         base_ns = base.get("ns_per_op")
@@ -123,7 +152,19 @@ def main() -> int:
         delta = (cur_ns - base_ns) / base_ns
         row = (name, base_ns, cur_ns, delta)
         if delta > args.threshold:
-            regressions.append(row)
+            # Cheap-op carveout: only applies to ops with a sub-threshold
+            # baseline AND only when the absolute ns/op delta is within the
+            # requested budget. Belt-and-suspenders — a cheap op that
+            # breaches both the percentage and the absolute budget still
+            # reports as a regression.
+            if (
+                cheap_budget_enabled
+                and base_ns < CHEAP_OP_NS_THRESHOLD
+                and abs(cur_ns - base_ns) <= args.cheap_op_absolute_budget
+            ):
+                exempted_cheap.append(row)
+            else:
+                regressions.append(row)
         elif delta < -args.threshold:
             improvements.append(row)
         else:
@@ -133,22 +174,31 @@ def main() -> int:
         if name not in baseline:
             new_ops.append(name)
 
-    all_rows = regressions + improvements + within
+    all_rows = regressions + improvements + within + exempted_cheap
     all_rows.sort(key=lambda r: abs(r[3]), reverse=True)
+    exempt_keys = {r[0] for r in exempted_cheap}
 
     out = sys.stdout.write
     out(f"# soft-fp64 bench comparison\n\n")
     out(f"- current:   `{args.current}`\n")
     out(f"- baseline:  `{args.baseline}`\n")
     out(f"- threshold: {args.threshold * 100:.2f}%\n")
-    out(f"- noise floor: {NOISE_FLOOR_NS:.1f} ns/op (smaller baselines skipped)\n\n")
+    out(f"- noise floor: {NOISE_FLOOR_NS:.1f} ns/op (smaller baselines skipped)\n")
+    if cheap_budget_enabled:
+        out(
+            f"- cheap-op carveout: baseline < {CHEAP_OP_NS_THRESHOLD:.1f} ns "
+            f"exempt when |delta| <= {args.cheap_op_absolute_budget:.2f} ns\n"
+        )
+    out("\n")
 
     if all_rows:
         out("| op | baseline ns/op | current ns/op | delta % |\n")
         out("|---|---:|---:|---:|\n")
         for name, base_ns, cur_ns, delta in all_rows:
             marker = ""
-            if delta > args.threshold:
+            if name in exempt_keys:
+                marker = " _exempt (cheap op)_"
+            elif delta > args.threshold:
                 marker = " **REGRESSION**"
             elif delta < -args.threshold:
                 marker = " _improvement_"
@@ -173,6 +223,21 @@ def main() -> int:
             out(
                 f"- `{name}`: {base_ns:.4f} -> {cur_ns:.4f} ns/op "
                 f"({fmt_delta(delta)})\n"
+            )
+        out("\n")
+
+    if exempted_cheap:
+        out(
+            f"## Exempted cheap ops ({len(exempted_cheap)}) — "
+            f"baseline < {CHEAP_OP_NS_THRESHOLD:.1f} ns, "
+            f"|delta| <= {args.cheap_op_absolute_budget:.2f} ns\n\n"
+        )
+        for name, base_ns, cur_ns, delta in exempted_cheap:
+            abs_delta = cur_ns - base_ns
+            sign = "+" if abs_delta >= 0 else ""
+            out(
+                f"- `{name}`: {base_ns:.4f} -> {cur_ns:.4f} ns/op "
+                f"({fmt_delta(delta)}, {sign}{abs_delta:.4f} ns)\n"
             )
         out("\n")
 
