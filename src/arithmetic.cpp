@@ -16,6 +16,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "internal.h"
+#include "internal_arith.h"
 #include "internal_fenv.h"
 #include "soft_fp64/soft_f64.h"
 
@@ -444,8 +445,10 @@ static SF64_ALWAYS_INLINE double add_r_impl(double a, double b, sf64_rounding_mo
 }
 
 extern "C" double sf64_add(double a, double b) {
+    // RNE specialization — inline body via src/internal_arith.h. The
+    // mode-parametrized add_r_impl stays available for sf64_add_r below.
     sf64_internal_fe_acc fe;
-    const double r = add_r_impl(a, b, SF64_RNE, fe);
+    const double r = sf64_internal_add_rne(a, b, fe);
     fe.flush();
     return r;
 }
@@ -459,7 +462,7 @@ extern "C" double sf64_add_r(sf64_rounding_mode mode, double a, double b) {
 
 extern "C" double sf64_sub(double a, double b) {
     sf64_internal_fe_acc fe;
-    const double r = add_r_impl(a, sf64_neg(b), SF64_RNE, fe);
+    const double r = sf64_internal_sub_rne(a, b, fe);
     fe.flush();
     return r;
 }
@@ -501,7 +504,7 @@ static SF64_ALWAYS_INLINE double mul_r_impl(double a, double b, sf64_rounding_mo
 
 extern "C" double sf64_mul(double a, double b) {
     sf64_internal_fe_acc fe;
-    const double r = mul_r_impl(a, b, SF64_RNE, fe);
+    const double r = sf64_internal_mul_rne(a, b, fe);
     fe.flush();
     return r;
 }
@@ -558,7 +561,7 @@ static SF64_ALWAYS_INLINE double div_r_impl(double a, double b, sf64_rounding_mo
 
 extern "C" double sf64_div(double a, double b) {
     sf64_internal_fe_acc fe;
-    const double r = div_r_impl(a, b, SF64_RNE, fe);
+    const double r = sf64_internal_div_rne(a, b, fe);
     fe.flush();
     return r;
 }

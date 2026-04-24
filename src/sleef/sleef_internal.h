@@ -55,15 +55,15 @@ SF64_ALWAYS_INLINE double qNaN() noexcept {
 
 // ---- integer predicates (no host FPU arithmetic in the body) ------------
 
-SF64_ALWAYS_INLINE bool is_int(double x) noexcept {
-    return soft_fp64::sleef::eq_(sf64_sub(x, sf64_trunc(x)), 0.0);
+SF64_ALWAYS_INLINE bool is_int(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
+    return soft_fp64::sleef::eq_(soft_fp64::sleef::sub_(x, sf64_trunc(x), fe), 0.0);
 }
 
-SF64_ALWAYS_INLINE bool is_odd_int(double x) noexcept {
-    if (!is_int(x))
+SF64_ALWAYS_INLINE bool is_odd_int(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
+    if (!is_int(x, fe))
         return false;
-    const double half = sf64_mul(x, 0.5);
-    return soft_fp64::sleef::ne_(sf64_sub(half, sf64_trunc(half)), 0.0);
+    const double half = soft_fp64::sleef::mul_(x, 0.5, fe);
+    return soft_fp64::sleef::ne_(soft_fp64::sleef::sub_(half, sf64_trunc(half), fe), 0.0);
 }
 
 } // namespace soft_fp64::sleef::detail
@@ -82,8 +82,12 @@ SF64_ALWAYS_INLINE bool is_odd_int(double x) noexcept {
 
 namespace soft_fp64::sleef {
 
-[[gnu::visibility("hidden")]] double sf64_internal_exp_core(double d);
-[[gnu::visibility("hidden")]] double sf64_internal_log_core(double d);
+// Cross-TU internals take the caller's stack-local fenv accumulator by
+// reference so the flag raise never rotates through TLS inside the hot
+// transcendental inner loops. The SLEEF public entry that invoked them
+// flushes once at return.
+[[gnu::visibility("hidden")]] double sf64_internal_exp_core(double d, sf64_internal_fe_acc& fe);
+[[gnu::visibility("hidden")]] double sf64_internal_log_core(double d, sf64_internal_fe_acc& fe);
 
 // DD-carrying exp/log cores. `logk_dd(d)` returns log|d| as a DD pair
 // (target ≈ 2^-106 relative); `expk_dd(d)` takes a DD argument and returns
@@ -94,7 +98,7 @@ namespace soft_fp64::sleef {
 // (erfc deep tail, tgamma near-overflow) can build its exp argument in DD
 // too. Hidden visibility so they stay out of the public ABI — the `nm -g`
 // CI check on `install-smoke` depends on this.
-[[gnu::visibility("hidden")]] DD sf64_internal_logk_dd(double d);
-[[gnu::visibility("hidden")]] double sf64_internal_expk_dd(DD d);
+[[gnu::visibility("hidden")]] DD sf64_internal_logk_dd(double d, sf64_internal_fe_acc& fe);
+[[gnu::visibility("hidden")]] double sf64_internal_expk_dd(DD d, sf64_internal_fe_acc& fe);
 
 } // namespace soft_fp64::sleef

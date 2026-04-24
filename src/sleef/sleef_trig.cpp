@@ -34,6 +34,15 @@
 
 #include "sleef_internal.h"
 
+// NOTE: `sleef_fe_macros.h` must follow `sleef_internal.h`. It rewrites
+// `sf64_*` / DD-primitive / `is_int` / `is_odd_int` at call sites; if it
+// were loaded first, those rewrites would also hit the function
+// definitions in sleef_internal.h above. The blank line below keeps
+// clang-format's alphabetical include-group sort from silently
+// reordering them back together.
+
+#include "sleef_fe_macros.h"
+
 #include <cstdint>
 
 using soft_fp64::sleef::bits_of;
@@ -42,7 +51,12 @@ using soft_fp64::sleef::ddadd2_dd_d_d;
 using soft_fp64::sleef::ddadd2_dd_d_dd;
 using soft_fp64::sleef::ddadd2_dd_dd;
 using soft_fp64::sleef::ddadd2_dd_dd_d;
+using soft_fp64::sleef::ddadd_dd_d_d;
+using soft_fp64::sleef::ddadd_dd_d_dd;
+using soft_fp64::sleef::ddadd_dd_dd_d;
+using soft_fp64::sleef::ddadd_dd_dd_dd;
 using soft_fp64::sleef::dddiv_dd_dd_dd;
+using soft_fp64::sleef::ddmul_d_dd_dd;
 using soft_fp64::sleef::ddmul_dd_d_d;
 using soft_fp64::sleef::ddmul_dd_dd_d;
 using soft_fp64::sleef::ddmul_dd_dd_dd;
@@ -123,49 +137,11 @@ SF64_ALWAYS_INLINE double ldexp3k_(double d, int e) noexcept {
     return from_bits(b);
 }
 
-// ---- DD helpers with "|a| >= |b|" precondition (fast TwoSum) ------------
-
-SF64_ALWAYS_INLINE DD ddadd_dd_d_d(double a, double b) noexcept {
-    const double s = sf64_add(a, b);
-    const double v = sf64_sub(s, a);
-    const double e = sf64_sub(b, v);
-    return DD{s, e};
-}
-
-SF64_ALWAYS_INLINE DD ddadd_dd_dd_d(DD a, double b) noexcept {
-    const double s = sf64_add(a.hi, b);
-    const double v = sf64_sub(s, a.hi);
-    const double e = sf64_add(sf64_sub(b, v), a.lo);
-    return DD{s, e};
-}
-
-SF64_ALWAYS_INLINE DD ddadd_dd_d_dd(double a, DD b) noexcept {
-    const double s = sf64_add(a, b.hi);
-    const double v = sf64_sub(s, a);
-    const double e = sf64_add(sf64_sub(b.hi, v), b.lo);
-    return DD{s, e};
-}
-
-SF64_ALWAYS_INLINE DD ddadd_dd_dd_dd(DD a, DD b) noexcept {
-    const double s = sf64_add(a.hi, b.hi);
-    const double v = sf64_sub(s, a.hi);
-    const double e = sf64_add(sf64_sub(b.hi, v), sf64_add(a.lo, b.lo));
-    return DD{s, e};
-}
-
-// ddmul_d_dd_dd — returns a single double approximating x * y via Dekker's
-// formula (no FMA). Matches SLEEF's tail reduction in the u1 cores.
-SF64_ALWAYS_INLINE double ddmul_d_dd_dd(DD x, DD y) noexcept {
-    const double xh = upper(x.hi), xl = sf64_sub(x.hi, xh);
-    const double yh = upper(y.hi), yl = sf64_sub(y.hi, yh);
-    double acc = sf64_mul(x.lo, yh);
-    acc = sf64_fma(xh, y.lo, acc);
-    acc = sf64_fma(xl, yl, acc);
-    acc = sf64_fma(xh, yl, acc);
-    acc = sf64_fma(xl, yh, acc);
-    acc = sf64_fma(xh, yh, acc);
-    return acc;
-}
+// ddadd / ddmul_d_dd_dd helpers moved to sleef_common.h as part of the
+// 1.1 fe-threading refactor — keeping them here would have the
+// `sleef_fe_macros.h` rewrites append `, fe` to the function signatures
+// themselves (the macros are name-level, they don't distinguish call
+// sites from definitions).
 
 // ========================================================================
 // Payne-Hanek table (port of SLEEF 3.6 Sleef_rempitabdp).
@@ -1475,7 +1451,8 @@ struct RempiSub {
 // rempisub(x) — returns (d, i) where d = x - rint(4x)*0.25 and
 // i = rint(4x) - rint(x)*4 (mod 4). Bit-exact rounding via the
 // "add 2^52, subtract" trick (SLEEF `rempisub`).
-SF64_ALWAYS_INLINE RempiSub rempisub(double x) noexcept {
+SF64_ALWAYS_INLINE RempiSub rempisub(double x,
+                                     soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     RempiSub ret;
     const double fourx = sf64_mul(4.0, x);
     const double absfx = sf64_fabs(fourx);
@@ -1495,7 +1472,8 @@ struct RempiResult {
     int32_t q;
 };
 
-SF64_ALWAYS_INLINE RempiResult rempi_(double a_in) noexcept {
+SF64_ALWAYS_INLINE RempiResult rempi_(double a_in,
+                                      soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     const double absa = sf64_fabs(a_in);
     int ex = ilogb2k_(absa) - 55;
     int qshift = (ex > (700 - 55)) ? -64 : 0;
@@ -1505,14 +1483,14 @@ SF64_ALWAYS_INLINE RempiResult rempi_(double a_in) noexcept {
     const int idx = ex * 4;
 
     DD x = ddmul_dd_d_d(a, kRempiTab[idx]);
-    RempiSub di = rempisub(x.hi);
+    RempiSub di = rempisub(x.hi, fe);
     int32_t q = di.i;
     x.hi = di.d;
     x = ddnormalize_dd_dd(x);
 
     DD y = ddmul_dd_d_d(a, kRempiTab[idx + 1]);
     x = ddadd2_dd_dd(x, y);
-    di = rempisub(x.hi);
+    di = rempisub(x.hi, fe);
     q += di.i;
     x.hi = di.d;
     x = ddnormalize_dd_dd(x);
@@ -1544,7 +1522,7 @@ constexpr double kSinU1NegSixth = -0.166666666666666657414808; // ≈ -1/3!
 // Polynomial cores for sinpi / cospi — SLEEF `sinpik` / `cospik`.
 // ========================================================================
 
-SF64_ALWAYS_INLINE DD sinpi_core(double d) noexcept {
+SF64_ALWAYS_INLINE DD sinpi_core(double d, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     const double u4 = sf64_mul(d, 4.0);
     const double cu = sf64_ceil(u4);
     const int32_t cu_i = sf64_to_i32(cu);
@@ -1588,7 +1566,7 @@ SF64_ALWAYS_INLINE DD sinpi_core(double d) noexcept {
     return x;
 }
 
-SF64_ALWAYS_INLINE DD cospi_core(double d) noexcept {
+SF64_ALWAYS_INLINE DD cospi_core(double d, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     const double u4 = sf64_mul(d, 4.0);
     const double cu = sf64_ceil(u4);
     const int32_t cu_i = sf64_to_i32(cu);
@@ -1639,6 +1617,7 @@ SF64_ALWAYS_INLINE DD cospi_core(double d) noexcept {
 // ========================================================================
 
 extern "C" double sf64_sin(double d) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(d) || isinf_(d))
         return qNaN();
     const double absd = sf64_fabs(d);
@@ -1664,7 +1643,7 @@ extern "C" double sf64_sin(double d) {
         s = ddadd_dd_dd_d(s, sf64_mul(sf64_add(dqh, qf), sf64_neg(kPI_D)));
         s_dd = s;
     } else {
-        RempiResult rr = rempi_(d);
+        RempiResult rr = rempi_(d, fe);
         const int signhi = gt_(rr.dd.hi, 0.0) ? 1 : 0;
         ql = ((rr.q & 3) * 2 + signhi + 1) >> 2;
         DD s = rr.dd;
@@ -1691,10 +1670,12 @@ extern "C" double sf64_sin(double d) {
         r = sf64_neg(r);
     if (is_neg_zero(d))
         r = d;
+    fe.flush();
     return r;
 }
 
 extern "C" double sf64_cos(double d) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(d) || isinf_(d))
         return qNaN();
     const double absd = sf64_fabs(d);
@@ -1738,7 +1719,7 @@ extern "C" double sf64_cos(double d) {
                                       sf64_mul(-kPI_D, 0.5)));
         s_dd = s;
     } else {
-        RempiResult rr = rempi_(absd);
+        RempiResult rr = rempi_(absd, fe);
         const int signhi = gt_(rr.dd.hi, 0.0) ? 1 : 0;
         ql = ((rr.q & 3) * 2 + signhi + 7) >> 1;
         DD s = rr.dd;
@@ -1761,6 +1742,7 @@ extern "C" double sf64_cos(double d) {
     double r = ddmul_d_dd_dd(t, x);
     if ((ql & 2) == 0)
         r = sf64_neg(r);
+    fe.flush();
     return r;
 }
 
@@ -1772,6 +1754,7 @@ extern "C" void sf64_sincos(double d, double* s_out, double* c_out) {
 }
 
 extern "C" double sf64_tan(double d) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(d) || isinf_(d))
         return qNaN();
     const double absd = sf64_fabs(d);
@@ -1801,7 +1784,7 @@ extern "C" double sf64_tan(double d) {
         s = ddadd_dd_dd_d(s, sf64_mul(sf64_add(dqh, qf_d), sf64_neg(kPI_D_H)));
         s_dd = s;
     } else {
-        RempiResult rr = rempi_(d);
+        RempiResult rr = rempi_(d, fe);
         ql = rr.q;
         s_dd = rr.dd;
     }
@@ -1835,6 +1818,7 @@ extern "C" double sf64_tan(double d) {
     double r = sf64_add(x.hi, x.lo);
     if (is_neg_zero(d))
         r = d;
+    fe.flush();
     return r;
 }
 
@@ -1850,38 +1834,47 @@ constexpr double kSinpiClamp = 2.5e8;
 }
 
 extern "C" double sf64_sinpi(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x) || isinf_(x))
         return qNaN();
     if (gt_(sf64_fabs(x), kSinpiClamp))
         return is_neg_zero(x) ? x : 0.0;
-    DD r = sinpi_core(x);
+    DD r = sinpi_core(x, fe);
     double ret = sf64_add(r.hi, r.lo);
     if (is_neg_zero(x))
         ret = -0.0;
+    fe.flush();
     return ret;
 }
 
 extern "C" double sf64_cospi(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x) || isinf_(x))
         return qNaN();
     if (gt_(sf64_fabs(x), kSinpiClamp))
         return 1.0;
-    DD r = cospi_core(x);
-    return sf64_add(r.hi, r.lo);
+    DD r = cospi_core(x, fe);
+    const double ret = sf64_add(r.hi, r.lo);
+    fe.flush();
+    return ret;
 }
 
 extern "C" double sf64_tanpi(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x) || isinf_(x))
         return qNaN();
     if (gt_(sf64_fabs(x), kSinpiClamp))
         return 0.0;
-    DD s = sinpi_core(x);
-    DD c = cospi_core(x);
+    DD s = sinpi_core(x, fe);
+    DD c = cospi_core(x, fe);
     const double ch = sf64_add(c.hi, c.lo);
     if (eq_(ch, 0.0)) {
         const double sh = sf64_add(s.hi, s.lo);
+        fe.flush();
         return signbit_(sh) ? sf64_neg(kInf) : kInf;
     }
     DD r = dddiv_dd_dd_dd(s, c);
-    return sf64_add(r.hi, r.lo);
+    const double ret = sf64_add(r.hi, r.lo);
+    fe.flush();
+    return ret;
 }

@@ -23,6 +23,11 @@
 
 #include "sleef_internal.h"
 
+// NOTE: `sleef_fe_macros.h` must follow `sleef_internal.h`. Blank line
+// keeps clang-format from alphabetising them back together.
+
+#include "sleef_fe_macros.h"
+
 using soft_fp64::sleef::DD;
 using soft_fp64::sleef::dd_to_d;
 using soft_fp64::sleef::ddadd2_dd_d_d;
@@ -75,25 +80,32 @@ constexpr double kInvPI_lo = -1.9678676675182486e-17;
 // Well within the U35 (≤8 ULP) band that the test spec pins for asinpi et al.
 
 extern "C" double sf64_asinpi(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     const double a = sf64_asin(x);
     if (isnan_(a) || isinf_(a))
         return a;
     // (a + 0) * (1/π hi + 1/π lo)
     const DD prod = ddmul_dd_d_d(a, kInvPI_hi);
     const DD with_lo = ddadd2_dd_dd_d(prod, sf64_mul(a, kInvPI_lo));
-    return dd_to_d(with_lo);
+    const double r = dd_to_d(with_lo);
+    fe.flush();
+    return r;
 }
 
 extern "C" double sf64_acospi(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     const double a = sf64_acos(x);
     if (isnan_(a) || isinf_(a))
         return a;
     const DD prod = ddmul_dd_d_d(a, kInvPI_hi);
     const DD with_lo = ddadd2_dd_dd_d(prod, sf64_mul(a, kInvPI_lo));
-    return dd_to_d(with_lo);
+    const double r = dd_to_d(with_lo);
+    fe.flush();
+    return r;
 }
 
 extern "C" double sf64_atanpi(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     const double a = sf64_atan(x);
     if (isnan_(a))
         return a;
@@ -102,16 +114,21 @@ extern "C" double sf64_atanpi(double x) {
         return signbit_(x) ? -0.5 : 0.5;
     const DD prod = ddmul_dd_d_d(a, kInvPI_hi);
     const DD with_lo = ddadd2_dd_dd_d(prod, sf64_mul(a, kInvPI_lo));
-    return dd_to_d(with_lo);
+    const double r = dd_to_d(with_lo);
+    fe.flush();
+    return r;
 }
 
 extern "C" double sf64_atan2pi(double y, double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     const double a = sf64_atan2(y, x);
     if (isnan_(a))
         return a;
     const DD prod = ddmul_dd_d_d(a, kInvPI_hi);
     const DD with_lo = ddadd2_dd_dd_d(prod, sf64_mul(a, kInvPI_lo));
-    return dd_to_d(with_lo);
+    const double r = dd_to_d(with_lo);
+    fe.flush();
+    return r;
 }
 
 // ========================================================================
@@ -119,6 +136,7 @@ extern "C" double sf64_atan2pi(double y, double x) {
 // ========================================================================
 
 extern "C" double sf64_rootn(double x, int n) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (n == 0)
@@ -169,6 +187,7 @@ extern "C" double sf64_rootn(double x, int n) {
     double r = sf64_pow(sf64_fabs(x), inv_n);
     if (signbit_(x) && n_odd)
         r = sf64_neg(r);
+    fe.flush();
     return r;
 }
 
@@ -212,7 +231,7 @@ constexpr double kErfTaylorY[] = {
 };
 
 // Small |x|: erf(x) = (2x/√π) * Taylor(x²).
-double erf_small(double x) {
+double erf_small(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
     const double x2 = sf64_mul(x, x);
     const double p = poly_array(x2, kErfTaylorY, sizeof(kErfTaylorY) / sizeof(kErfTaylorY[0]));
     // (2/√π) * x * p
@@ -265,7 +284,7 @@ constexpr double kErfcChebCoef[] = {
 // is an FMA-backed Dekker product) and feed the DD into `expk_dd` — the
 // same DD-accurate exp that `sf64_pow` uses.  This keeps the deep tail
 // inside GAMMA without needing a separate experimental harness.
-double erfc_cheb(double z) {
+double erfc_cheb(double z, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
     // t = 2 / (2 + z)
     const double t = sf64_div(2.0, sf64_add(2.0, z));
     const double ty = sf64_sub(sf64_mul(t, 4.0), 2.0);
@@ -287,12 +306,13 @@ double erfc_cheb(double z) {
     const DD tail0 = ddadd2_dd_dd_d(half_ty_d, sf64_mul(kErfcChebCoef[0], 0.5));
     const DD tail = ddadd2_dd_dd_d(tail0, sf64_neg(dd_));
     const DD exp_arg_dd = ddadd2_dd_dd(neg_zsq, tail);
-    return sf64_mul(t, sf64_internal_expk_dd(exp_arg_dd));
+    return sf64_mul(t, soft_fp64::sleef::sf64_internal_expk_dd(exp_arg_dd, fe));
 }
 
 } // namespace
 
 extern "C" double sf64_erf(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (isinf_(x))
@@ -301,19 +321,22 @@ extern "C" double sf64_erf(double x) {
     // Taylor converges well for |x| < ~0.9 with 14 terms.  Past that, use
     // the Chebyshev erfc path: erf(|x|) = 1 - erfc(|x|).
     if (lt_(a, 0.9)) {
-        const double r = erf_small(a);
+        const double r = erf_small(a, fe);
+        fe.flush();
         return signbit_(x) ? sf64_neg(r) : r;
     }
     if (gt_(a, 6.0)) {
         // erf(|x|) ≈ 1; keep correct sign.
         return signbit_(x) ? -1.0 : 1.0;
     }
-    const double c = erfc_cheb(a);
+    const double c = erfc_cheb(a, fe);
     const double r = sf64_sub(1.0, c);
+    fe.flush();
     return signbit_(x) ? sf64_neg(r) : r;
 }
 
 extern "C" double sf64_erfc(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (isinf_(x))
@@ -323,8 +346,10 @@ extern "C" double sf64_erfc(double x) {
     // since erf(0.9) ≈ 0.797 (leaves ~0.2 precision margin).  For |x| >= 0.9
     // switch to the Chebyshev erfc form which is cancellation-free.
     if (lt_(a, 0.9)) {
-        const double e = erf_small(x); // uses signed x
-        return sf64_sub(1.0, e);
+        const double e = erf_small(x, fe); // uses signed x
+        const double r = sf64_sub(1.0, e);
+        fe.flush();
+        return r;
     }
     // |x| >= 1: use Chebyshev for erfc(|x|).
     if (gt_(a, 27.0)) {
@@ -333,11 +358,10 @@ extern "C" double sf64_erfc(double x) {
             return 2.0;
         return 0.0;
     }
-    const double c = erfc_cheb(a);
-    if (signbit_(x)) {
-        return sf64_sub(2.0, c);
-    }
-    return c;
+    const double c = erfc_cheb(a, fe);
+    const double r = signbit_(x) ? sf64_sub(2.0, c) : c;
+    fe.flush();
+    return r;
 }
 
 // ========================================================================
@@ -376,7 +400,7 @@ constexpr double kLanczosC[9] = {
 // DD accumulator (TwoSum each step) keeps the summation exact; individual
 // quotients still inherit 0.5 ULP from `sf64_div`, which is fine since the
 // `log` consumer only needs ≥~2^-60 relative in `a`.
-DD lanczos_a_shifted_dd(double x) {
+DD lanczos_a_shifted_dd(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
     DD acc = DD{kLanczosC[0], 0.0};
     for (int k = 1; k <= 8; ++k) {
         // term = c_k / (x + k - 1) built as DD: DD_reciprocal × scalar.
@@ -395,8 +419,8 @@ DD lanczos_a_shifted_dd(double x) {
 // plain-double `logk_dd` on d.hi, then add the first-order correction
 // `d.lo / d.hi` (log(1 + ε) ≈ ε for |ε| ≤ 2^-53).  Second-order correction
 // ≤ ε²/2 ≤ 2^-107 — negligible at DD precision.
-DD logk_dd_of_dd(DD d) {
-    DD log_hi = sf64_internal_logk_dd(d.hi);
+DD logk_dd_of_dd(DD d, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
+    DD log_hi = soft_fp64::sleef::sf64_internal_logk_dd(d.hi, fe);
     const double correction = sf64_div(d.lo, d.hi);
     return ddadd2_dd_dd_d(log_hi, correction);
 }
@@ -416,15 +440,15 @@ constexpr double kLog2PiOver2_lo = -0x1.65b5a1b7ff5dfp-55; // -3.878294158067241
 // the plain-double sum lose ~8 ulp(max summand) ≈ 2^-49 absolute into a
 // result that's close to zero — that's the 131 k-ULP drift the experimental
 // harness flags.  DD keeps ≥~2^-100 absolute across the sum.
-DD lgamma_dd(double x) {
+DD lgamma_dd(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
     const double z = sf64_sub(x, 1.0);
     // t = z + g + 0.5, carried in DD so the plain-double rounding noise in
     // `z + 7.5` doesn't leak into `log(t) · (z+0.5)` (largest term in lg).
     const DD t_dd = ddadd2_dd_d_d(z, sf64_add(kLanczosG, 0.5));
-    const DD a_dd = lanczos_a_shifted_dd(x);
+    const DD a_dd = lanczos_a_shifted_dd(x, fe);
 
-    const DD log_t_dd = logk_dd_of_dd(t_dd);
-    const DD log_a_dd = logk_dd_of_dd(a_dd);
+    const DD log_t_dd = logk_dd_of_dd(t_dd, fe);
+    const DD log_a_dd = logk_dd_of_dd(a_dd, fe);
     // zp5 = z + 0.5 in DD — the plain-double rounding of `z + 0.5` leaves
     // ~2^-53 abs error, amplified by log(t) ≈ 2 into ~2^-52 abs error in
     // term1, which in turn is ≈80 k ULP of the near-zero lgamma result.
@@ -438,8 +462,8 @@ DD lgamma_dd(double x) {
 }
 
 // log|gamma(x)| for x >= 0.5, via Lanczos.
-double lgamma_pos(double x) {
-    return dd_to_d(lgamma_dd(x));
+double lgamma_pos(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
+    return dd_to_d(lgamma_dd(x, fe));
 }
 
 // gamma(x) for x >= 0.5 via Lanczos.  Combine t^(z+0.5) * e^-t inside a
@@ -447,13 +471,14 @@ double lgamma_pos(double x) {
 // but (z+0.5)*log(t) - t stays finite until the true overflow point.
 // Feeds the DD-accurate lg into `expk_dd` so the deep tail (x ~ 170,
 // overflow boundary) keeps its precision through exp.
-double tgamma_pos(double x) {
-    return sf64_internal_expk_dd(lgamma_dd(x));
+double tgamma_pos(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) {
+    return soft_fp64::sleef::sf64_internal_expk_dd(lgamma_dd(x, fe), fe);
 }
 
 } // namespace
 
 extern "C" double sf64_tgamma(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (eq_(x, 0.0)) {
@@ -472,7 +497,9 @@ extern "C" double sf64_tgamma(double x) {
         return kInf;
 
     if (ge_(x, 0.5)) {
-        return tgamma_pos(x);
+        const double r = tgamma_pos(x, fe);
+        fe.flush();
+        return r;
     }
 
     // Reflection: gamma(x) = π / (sin(πx) * gamma(1-x))
@@ -480,11 +507,14 @@ extern "C" double sf64_tgamma(double x) {
     const double sp = sf64_sinpi(x);
     if (eq_(sp, 0.0))
         return qNaN();
-    const double g1mx = tgamma_pos(sf64_sub(1.0, x));
-    return sf64_div(kPI, sf64_mul(sp, g1mx));
+    const double g1mx = tgamma_pos(sf64_sub(1.0, x), fe);
+    const double r = sf64_div(kPI, sf64_mul(sp, g1mx));
+    fe.flush();
+    return r;
 }
 
 extern "C" double sf64_lgamma_r(double x, int* sign) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     int local_sign = 1;
     double result;
     if (isnan_(x)) {
@@ -511,7 +541,7 @@ extern "C" double sf64_lgamma_r(double x, int* sign) {
     }
 
     if (ge_(x, 0.5)) {
-        result = lgamma_pos(x);
+        result = lgamma_pos(x, fe);
         // gamma(x) for x>0 is positive (except the reflection cases handled
         // below); at x=0.5…, gamma > 0.
         local_sign = 1;
@@ -520,7 +550,7 @@ extern "C" double sf64_lgamma_r(double x, int* sign) {
         // Use reflection via log to avoid catastrophic cancellation in
         // gamma itself:  lgamma(x) = log π - log|sin(πx)| - lgamma(1-x)
         const double sp = sf64_fabs(sf64_sinpi(x));
-        result = sf64_sub(sf64_sub(sf64_log(kPI), sf64_log(sp)), lgamma_pos(sf64_sub(1.0, x)));
+        result = sf64_sub(sf64_sub(sf64_log(kPI), sf64_log(sp)), lgamma_pos(sf64_sub(1.0, x), fe));
         local_sign = 1;
     } else {
         // x < 0, non-integer.  Same reflection formula; sign depends on
@@ -528,11 +558,12 @@ extern "C" double sf64_lgamma_r(double x, int* sign) {
         // (since 1-x > 1), so sign is sign(sin(πx)).
         const double sp = sf64_sinpi(x);
         const double asp = sf64_fabs(sp);
-        result = sf64_sub(sf64_sub(sf64_log(kPI), sf64_log(asp)), lgamma_pos(sf64_sub(1.0, x)));
+        result = sf64_sub(sf64_sub(sf64_log(kPI), sf64_log(asp)), lgamma_pos(sf64_sub(1.0, x), fe));
         local_sign = signbit_(sp) ? -1 : 1;
     }
     if (sign)
         *sign = local_sign;
+    fe.flush();
     return result;
 }
 

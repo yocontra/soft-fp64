@@ -26,6 +26,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "internal.h"
+#include "internal_arith.h"
 #include "internal_fenv.h"
 #include "soft_fp64/soft_f64.h"
 
@@ -321,7 +322,7 @@ SF64_ALWAYS_INLINE double sqrt_r_impl(double x, sf64_rounding_mode mode,
 
 extern "C" double sf64_sqrt(double x) {
     sf64_internal_fe_acc fe;
-    const double r = sqrt_r_impl(x, SF64_RNE, fe);
+    const double r = sf64_internal_sqrt_rne(x, fe);
     fe.flush();
     return r;
 }
@@ -766,7 +767,7 @@ SF64_ALWAYS_INLINE double fma_r_impl(double a, double b, double c, sf64_rounding
 
 extern "C" double sf64_fma(double a, double b, double c) {
     sf64_internal_fe_acc fe;
-    const double r = fma_r_impl(a, b, c, SF64_RNE, fe);
+    const double r = sf64_internal_fma_rne(a, b, c, fe);
     fe.flush();
     return r;
 }

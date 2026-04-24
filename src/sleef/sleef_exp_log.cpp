@@ -24,6 +24,10 @@
 //
 
 #include "sleef_internal.h"
+// IMPORTANT: must come after sleef_internal.h — rewrites `sf64_*(...)`,
+// the DD primitives, and the `*_core` cross-TU cores to their fe-threaded
+// forms. Each helper and entry must have a local `fe` accumulator in scope.
+#include "sleef_fe_macros.h"
 
 using soft_fp64::sleef::bits_of;
 using soft_fp64::sleef::DD;
@@ -153,7 +157,8 @@ constexpr double kLN2 = 0.693147180559945286226764;        // DD hi
 constexpr double kLN2_LO = 2.319046813846299558417771e-17; // DD lo
 
 // SLEEF's Horner eval for a POLY10 expressed as nested fmas (all via sf64_fma).
-SF64_ALWAYS_INLINE double poly10_horner(double x, const double c[10]) noexcept {
+SF64_ALWAYS_INLINE double poly10_horner(double x, const double c[10],
+                                        soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     double u = c[0];
     u = mla(u, x, c[1]);
     u = mla(u, x, c[2]);
@@ -167,7 +172,8 @@ SF64_ALWAYS_INLINE double poly10_horner(double x, const double c[10]) noexcept {
     return u;
 }
 
-SF64_ALWAYS_INLINE double poly7_horner(double x, const double c[7]) noexcept {
+SF64_ALWAYS_INLINE double poly7_horner(double x, const double c[7],
+                                       soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     double u = c[0];
     u = mla(u, x, c[1]);
     u = mla(u, x, c[2]);
@@ -180,7 +186,7 @@ SF64_ALWAYS_INLINE double poly7_horner(double x, const double c[7]) noexcept {
 
 // expk2: e^d for d given as a DD. Used by expm1.
 // Direct port of SLEEF's `expk2(Sleef_double2 d)`.
-DD expk2(DD d) noexcept {
+DD expk2(DD d, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     // q = round((d.x + d.y) * R_LN2)
     const double sum = sf64_add(d.hi, d.lo);
     const double qf = rint_(sf64_mul(sum, kR_LN2));
@@ -232,7 +238,7 @@ namespace soft_fp64::sleef {
 // ----------------------------------------------------------------------
 // sf64_internal_exp_core — SLEEF xexp (u10) — degree-10 minimax.
 // ----------------------------------------------------------------------
-double sf64_internal_exp_core(double d) {
+double sf64_internal_exp_core(double d, sf64_internal_fe_acc& fe) {
     if (isnan_(d))
         return qNaN();
     if (gt_(d, 709.782712893383996732223))
@@ -250,7 +256,7 @@ double sf64_internal_exp_core(double d) {
 
     // SLEEF minimax: u = c9 + s*(c8 + s*(…)) for the coefficients 1/11!
     // down through 1/3! (xexp runs Horner through degree 10).
-    double u = poly10_horner(s, kExpPoly);
+    double u = poly10_horner(s, kExpPoly, fe);
     // u = mla(u, s, 0.5)   — fold in the 1/2 coefficient.
     u = mla(u, s, 0.5);
     // u = s*s*u + s + 1    — SLEEF's final reconstruction identity.
@@ -267,7 +273,7 @@ double sf64_internal_exp_core(double d) {
 // ----------------------------------------------------------------------
 // sf64_internal_log_core — SLEEF xlog_u1 (u10) — degree-7 minimax + DD re-assembly.
 // ----------------------------------------------------------------------
-double sf64_internal_log_core(double d) {
+double sf64_internal_log_core(double d, sf64_internal_fe_acc& fe) {
     if (isnan_(d) || lt_(d, 0.0))
         return qNaN();
     if (eq_(d, 0.0))
@@ -301,7 +307,7 @@ double sf64_internal_log_core(double d) {
     const double x2 = sf64_mul(x.hi, x.hi);
 
     // t = POLY7(x², …)  (SLEEF kLogPoly coefficients, c6..c0).
-    const double t = poly7_horner(x2, kLogPoly);
+    const double t = poly7_horner(x2, kLogPoly, fe);
 
     // s = ln(2) * e  (carried as DD)  +  2*x  +  x² * x * t
     DD s = ddmul_dd_dd_d(DD{kLN2, kLN2_LO}, sf64_from_i32(e));
@@ -321,13 +327,17 @@ using soft_fp64::sleef::sf64_internal_exp_core;
 using soft_fp64::sleef::sf64_internal_log_core;
 
 extern "C" double sf64_exp(double x) {
-    return sf64_internal_exp_core(x);
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
+    const double r = sf64_internal_exp_core(x, fe);
+    fe.flush();
+    return r;
 }
 
 // ----------------------------------------------------------------------
 // sf64_exp2 — SLEEF xexp2 (u10) native impl.
 // ----------------------------------------------------------------------
 extern "C" double sf64_exp2(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (ge_(x, 1024.0))
@@ -341,7 +351,7 @@ extern "C" double sf64_exp2(double x) {
     const double s = sf64_sub(x, qf);
 
     // u = POLY10(s, …)   then fold in the degree-1 ln(2) coefficient.
-    double u = poly10_horner(s, kExp2Poly);
+    double u = poly10_horner(s, kExp2Poly, fe);
     u = mla(u, s, +0.6931471805599452862e+0);
 
     // t = 1 + u*s, all in DD, then renormalize; SLEEF's trick for the 1.0.
@@ -349,6 +359,7 @@ extern "C" double sf64_exp2(double x) {
     double r = ddnormalize_dd_dd(t).hi;
 
     r = sf64_ldexp(r, q);
+    fe.flush();
     return r;
 }
 
@@ -356,6 +367,7 @@ extern "C" double sf64_exp2(double x) {
 // sf64_exp10 — SLEEF xexp10 (u10) native impl.
 // ----------------------------------------------------------------------
 extern "C" double sf64_exp10(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (gt_(x, 308.25471555991671))
@@ -372,7 +384,7 @@ extern "C" double sf64_exp10(double x) {
     s = sf64_fma(qf, sf64_neg(kL10L), s);
 
     // u = POLY10(s, …) then fold in the degree-1 ln(10) coefficient.
-    double u = poly10_horner(s, kExp10Poly);
+    double u = poly10_horner(s, kExp10Poly, fe);
     u = mla(u, s, +0.2302585092994045901e+1);
 
     // t = 1 + u*s in DD, renormalize.
@@ -380,6 +392,7 @@ extern "C" double sf64_exp10(double x) {
     double r = ddnormalize_dd_dd(t).hi;
 
     r = sf64_ldexp(r, q);
+    fe.flush();
     return r;
 }
 
@@ -387,6 +400,7 @@ extern "C" double sf64_exp10(double x) {
 // sf64_expm1 — SLEEF xexpm1 via DD exp core (expk2).
 // ----------------------------------------------------------------------
 extern "C" double sf64_expm1(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x))
         return qNaN();
     if (gt_(x, 709.782712893383996732223))
@@ -395,24 +409,29 @@ extern "C" double sf64_expm1(double x) {
         return -1.0;
 
     // d = expk2(x) - 1 in DD, then collapse.
-    DD d = expk2(DD{x, 0.0});
+    DD d = expk2(DD{x, 0.0}, fe);
     d = ddadd2_dd_dd_d(d, -1.0);
     double r = dd_to_d(d);
 
     // Signed-zero preservation: -0 in → -0 out.
     if (bits_of(x) == 0x8000000000000000ULL)
         r = -0.0;
+    fe.flush();
     return r;
 }
 
 extern "C" double sf64_log(double x) {
-    return sf64_internal_log_core(x);
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
+    const double r = sf64_internal_log_core(x, fe);
+    fe.flush();
+    return r;
 }
 
 // ----------------------------------------------------------------------
 // sf64_log2 — SLEEF xlog2 (u10) — same reduction, different DD fold-in.
 // ----------------------------------------------------------------------
 extern "C" double sf64_log2(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x) || lt_(x, 0.0))
         return qNaN();
     if (eq_(x, 0.0))
@@ -435,19 +454,22 @@ extern "C" double sf64_log2(double x) {
 
     const DD xdd = dddiv_dd_dd_dd(ddadd2_dd_d_d(-1.0, m), ddadd2_dd_d_d(1.0, m));
     const double x2 = sf64_mul(xdd.hi, xdd.hi);
-    const double t = poly7_horner(x2, kLog2Poly);
+    const double t = poly7_horner(x2, kLog2Poly, fe);
 
     // s = e  +  x * log2(e)_dd  +  x² * x.hi * t     (all DD)
     DD s = ddadd2_dd_d_dd(sf64_from_i32(e),
                           ddmul_dd_dd_dd(xdd, DD{2.885390081777926774, 6.0561604995516736434e-18}));
     s = ddadd2_dd_dd_d(s, sf64_mul(sf64_mul(x2, xdd.hi), t));
-    return dd_to_d(s);
+    const double r = dd_to_d(s);
+    fe.flush();
+    return r;
 }
 
 // ----------------------------------------------------------------------
 // sf64_log10 — SLEEF xlog10 (u10).
 // ----------------------------------------------------------------------
 extern "C" double sf64_log10(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x) || lt_(x, 0.0))
         return qNaN();
     if (eq_(x, 0.0))
@@ -470,19 +492,22 @@ extern "C" double sf64_log10(double x) {
 
     const DD xdd = dddiv_dd_dd_dd(ddadd2_dd_d_d(-1.0, m), ddadd2_dd_d_d(1.0, m));
     const double x2 = sf64_mul(xdd.hi, xdd.hi);
-    const double t = poly7_horner(x2, kLog10Poly);
+    const double t = poly7_horner(x2, kLog10Poly, fe);
 
     // s = log10(2)_dd * e  +  x * log10(e)_dd  +  x²*x.hi*t
     DD s = ddmul_dd_dd_d(DD{0.30102999566398119802, -2.803728127785170339e-18}, sf64_from_i32(e));
     s = ddadd2_dd_dd(s, ddmul_dd_dd_dd(xdd, DD{0.86858896380650363334, 1.1430059694096389311e-17}));
     s = ddadd2_dd_dd_d(s, sf64_mul(sf64_mul(x2, xdd.hi), t));
-    return dd_to_d(s);
+    const double r = dd_to_d(s);
+    fe.flush();
+    return r;
 }
 
 // ----------------------------------------------------------------------
 // sf64_log1p — SLEEF xlog1p (u10).
 // ----------------------------------------------------------------------
 extern "C" double sf64_log1p(double x) {
+    soft_fp64::sleef::sf64_internal_fe_acc fe;
     if (isnan_(x) || lt_(x, -1.0))
         return qNaN();
     if (eq_(x, -1.0))
@@ -511,7 +536,7 @@ extern "C" double sf64_log1p(double x) {
     // x_dd = m / (2 + m)   as DD.
     const DD xdd = dddiv_dd_dd_dd(DD{m, 0.0}, ddadd2_dd_d_d(2.0, m));
     const double x2 = sf64_mul(xdd.hi, xdd.hi);
-    const double tp = poly7_horner(x2, kLogPoly);
+    const double tp = poly7_horner(x2, kLogPoly, fe);
 
     // s = ln(2)_dd * e  +  2*x  +  x² * x.hi * tp
     DD s = ddmul_dd_dd_d(DD{kLN2, kLN2_LO}, sf64_from_i32(e));
@@ -521,5 +546,6 @@ extern "C" double sf64_log1p(double x) {
     double r = dd_to_d(s);
     if (bits_of(x) == 0x8000000000000000ULL)
         r = -0.0;
+    fe.flush();
     return r;
 }
