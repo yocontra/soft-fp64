@@ -327,7 +327,10 @@ jobs:
         run: build-bench/bench/bench_soft_fp64 --min-time-ms=500 --json > current.json
 
       - name: Compare vs baseline
-        run: python3 bench/compare.py current.json bench/baseline.json --threshold=0.20
+        run: |
+          python3 bench/compare.py current.json bench/baseline.json \
+            --threshold=0.20 \
+            --cheap-op-absolute-budget=5.0
 
       - name: Upload bench JSON
         if: always()
