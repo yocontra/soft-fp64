@@ -109,6 +109,9 @@ and silent (non-raising) exception behavior when `SOFT_FP64_FENV=disabled`.
   unboundedly against the double-floor absolute error). The proper
   fix is a zero-centered Taylor expansion, tracked in `TODO.md`
   for a future release.
+- `sf64_floor` disabled-mode delta from 1.0 baseline is
+  jitter-dominated at short run lengths (remeasured at
+  `--min-time-ms=2000`, 3 samples, all within +10%).
 
 ### Performance
 
