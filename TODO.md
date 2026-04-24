@@ -193,6 +193,33 @@ the pow cross-TU fix above lands — that refactor may re-measure the
 
 ## Post-1.1
 
+### Extend internal RNE surface to `fcmp` / `trunc` / `ldexp` / `frexp` / `fabs` / `neg`
+
+**What.** The 1.1 `src/internal_arith.h` exposes header-inlined RNE
+specializations for `add` / `sub` / `mul` / `div` / `fma` / `sqrt` so
+SLEEF DD primitives avoid the cross-TU public-ABI cost. `sf64_pow` still
+calls `sf64_fcmp` (×15), `sf64_trunc` (×3), `sf64_ldexp`, `sf64_frexp`,
+`sf64_fabs`, `sf64_neg` through the public ABI — on Apple Silicon each
+is a full call frame plus (in tls fenv mode) a `__tlv_get_addr`
+roundtrip. Disasm of 1.1 `sf64_pow` confirms these are the remaining
+`bl` sites after the 1.1 refactor.
+
+**Why it matters.** Pow's residual +27% (disabled) / +30% (tls) vs the
+1.0 baseline is dominated by these cross-TU calls. Inlining them closes
+the `sf64_pow` gap further — rough projection based on the bl census is
+~5–10 percentage points of delta reduction. Also shrinks any
+transcendental that composes on `fcmp` / `fabs` for NaN / sign gating.
+
+**What's needed.** Add hidden-visibility header-inlined RNE helpers
+`sf64_internal_{fcmp,trunc,ldexp,frexp,fabs,neg}` in
+`src/internal_arith.h` (or a sibling header if the file grows too
+large). Rewire `src/sleef/*.cpp` call sites to the internal helpers via
+the existing `sf64_*` macro pattern in `src/sleef/sleef_fe_macros.h`.
+Public `sf64_{fcmp,trunc,…}` stay unchanged (ABI is sacrosanct). No
+test or oracle changes — bit-exactness is preserved by construction
+since the inline helpers are lifts of the existing bodies. Verify with
+full `ctest` in both fenv modes and a fresh `sf64_pow` bench delta.
+
 ### Tighten `erf` / `erfc` / `tgamma` to U10 or U35
 
 **What.** These currently gate at GAMMA (≤1024 ULP); SLEEF upstream
