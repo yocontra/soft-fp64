@@ -238,7 +238,7 @@ namespace soft_fp64::sleef {
 // ----------------------------------------------------------------------
 // sf64_internal_exp_core — SLEEF xexp (u10) — degree-10 minimax.
 // ----------------------------------------------------------------------
-double sf64_internal_exp_core(double d, sf64_internal_fe_acc& fe) {
+[[gnu::visibility("hidden")]] double sf64_internal_exp_core(double d, sf64_internal_fe_acc& fe) {
     if (isnan_(d))
         return qNaN();
     if (gt_(d, 709.782712893383996732223))
@@ -273,7 +273,7 @@ double sf64_internal_exp_core(double d, sf64_internal_fe_acc& fe) {
 // ----------------------------------------------------------------------
 // sf64_internal_log_core — SLEEF xlog_u1 (u10) — degree-7 minimax + DD re-assembly.
 // ----------------------------------------------------------------------
-double sf64_internal_log_core(double d, sf64_internal_fe_acc& fe) {
+[[gnu::visibility("hidden")]] double sf64_internal_log_core(double d, sf64_internal_fe_acc& fe) {
     if (isnan_(d) || lt_(d, 0.0))
         return qNaN();
     if (eq_(d, 0.0))
