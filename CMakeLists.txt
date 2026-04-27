@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(soft_fp64
-    VERSION 1.2.0
+    VERSION 2.0.0
     DESCRIPTION "Portable bit-exact IEEE-754 binary64 soft-float library"
     LANGUAGES CXX)
 
@@ -108,18 +108,6 @@ if(SOFT_FP64_BUILD_BENCH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/CMakeList
     add_subdirectory(bench)
 endif()
 
-# AdaptiveCpp Metal SSCP external-fp64 adapter — opt-in. When enabled,
-# stages a flat directory of soft-fp64 sources + forwarders ready to be
-# passed as -DACPP_METAL_EXTERNAL_FP64_DIR when configuring AdaptiveCpp.
-# See adapters/acpp_metal/README.md for the full integration contract.
-# Does not produce a conventional archive; install-smoke's sf64_*-only
-# ABI grep is unaffected.
-option(SOFT_FP64_BUILD_ACPP_METAL_ADAPTER
-       "Stage sources for the AdaptiveCpp Metal SSCP external-fp64 adapter" OFF)
-if(SOFT_FP64_BUILD_ACPP_METAL_ADAPTER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/adapters/acpp_metal/CMakeLists.txt")
-    add_subdirectory(adapters/acpp_metal)
-endif()
-
 # -----------------------------------------------------------------------------
 # Install, export set, find_package + pkg-config integration.
 #
@@ -153,15 +141,42 @@ if(SOFT_FP64_INSTALL)
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         FILES_MATCHING PATTERN "*.h")
 
+    # Ship the `sf64_*` source bodies + the SLEEF-derived transcendental
+    # sources alongside the installed headers. Consumers that need to
+    # compile soft-fp64 into a non-host target (the AdaptiveCpp libkernel
+    # bitcode build, downstream GPU adapters) read these via the
+    # `soft_fp64_SOURCE_DIR` / `soft_fp64_SLEEF_SOURCE_DIR` variables
+    # exposed by `soft_fp64Config.cmake`. Hidden-visibility internal
+    # headers (`internal*.h`) ride along; they are not promoted to the
+    # public include set.
+    install(DIRECTORY src/
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/soft_fp64/src"
+        FILES_MATCHING
+            PATTERN "*.cpp"
+            PATTERN "*.h"
+            PATTERN "*.hpp")
+
     install(EXPORT soft_fp64Targets
         FILE soft_fp64Targets.cmake
         NAMESPACE soft_fp64::
         DESTINATION ${SOFT_FP64_CMAKE_CONFIG_INSTALL_DIR})
 
+    # Source-tree paths surfaced to consumers that need to compile the
+    # `sf64_*` bodies themselves (e.g. AdaptiveCpp's libkernel bitcode
+    # build, which globs `src/*.cpp` + `src/sleef/*.cpp` directly into a
+    # SYCL/SSCP target rather than linking the host static library).
+    # Resolved at install time relative to the install prefix; the source
+    # tree is shipped under `${CMAKE_INSTALL_DATADIR}/soft_fp64/src`.
+    set(SOFT_FP64_SOURCE_RELDIR        "${CMAKE_INSTALL_DATADIR}/soft_fp64/src")
+    set(SOFT_FP64_SLEEF_SOURCE_RELDIR  "${CMAKE_INSTALL_DATADIR}/soft_fp64/src/sleef")
+    set(SOFT_FP64_INCLUDE_RELDIR       "${CMAKE_INSTALL_INCLUDEDIR}")
+
     configure_package_config_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/soft_fp64Config.cmake.in"
         "${CMAKE_CURRENT_BINARY_DIR}/soft_fp64Config.cmake"
-        INSTALL_DESTINATION "${SOFT_FP64_CMAKE_CONFIG_INSTALL_DIR}")
+        INSTALL_DESTINATION "${SOFT_FP64_CMAKE_CONFIG_INSTALL_DIR}"
+        PATH_VARS SOFT_FP64_SOURCE_RELDIR SOFT_FP64_SLEEF_SOURCE_RELDIR
+                  SOFT_FP64_INCLUDE_RELDIR)
 
     write_basic_package_version_file(
         "${CMAKE_CURRENT_BINARY_DIR}/soft_fp64ConfigVersion.cmake"

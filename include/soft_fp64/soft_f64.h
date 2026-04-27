@@ -31,7 +31,7 @@
  * @section non_goals Non-goals
  *
  * - Signalling-NaN payload preservation (we quiet sNaN on entry; INVALID is
- *   still raised through the @ref fenv surface when available).
+ *   still raised through the fenv surface when available).
  * - Complex-number math.
  * - `fp128` / `fp16` (separate project if ever needed).
  *
@@ -39,12 +39,12 @@
  *
  * Arithmetic and convert paths are strictly conformant to IEEE-754-2008 for
  * round-affected ops under all five rounding attributes. The default
- * `sf64_*` surface is round-to-nearest-ties-to-even (RNE); @ref rounding
+ * `sf64_*` surface is round-to-nearest-ties-to-even (RNE); rounding
  * describes the additive `sf64_*_r(mode, …)` surface for the other four
  * modes (RTZ / RUP / RDN / RNA).
  *
  * IEEE-754 exception flags (`INVALID`, `DIVBYZERO`, `OVERFLOW`,
- * `UNDERFLOW`, `INEXACT`) are raised through the @ref fenv surface when
+ * `UNDERFLOW`, `INEXACT`) are raised through the fenv surface when
  * `soft_fp64` is built with `SOFT_FP64_FENV=tls` (default on hosted
  * builds). When built with `SOFT_FP64_FENV=disabled`, all `sf64_fe_*`
  * entries become no-ops and the corresponding raise-sites are compiled
@@ -935,7 +935,7 @@ void sf64_fe_restore(const sf64_fe_state_t* in);
 
 /**
  * @name fenv_ex IEEE-754 exception flags (caller-supplied state)
- * @brief Parallel ABI matching the @ref fenv surface but reading and
+ * @brief Parallel ABI matching the fenv surface but reading and
  *        writing a caller-provided @ref sf64_fe_state_t instead of
  *        thread-local storage.
  *

@@ -148,29 +148,19 @@ extern "C" double __acpp_sscp_soft_f64_add(double a, double b) {
 That keeps vendor-specific naming where it belongs (in the vendor's
 frontend) and lets the library stay generic.
 
-### AdaptiveCpp Metal backend (bundled adapter)
+### AdaptiveCpp Metal backend
 
-For the AdaptiveCpp Metal SSCP path specifically — used by downstream
-GPU consumers on Apple Silicon, where the GPU lacks native fp64 —
-soft-fp64 ships a ready-made adapter
-at `adapters/acpp_metal/`. It stages the full `sf64_*` source tree plus
-one-line forwarders for every required `__acpp_sscp_soft_f64_*`
-primitive and the optional `__acpp_sscp_*_f64` math surface, ready to
-be globbed into AdaptiveCpp's libkernel bitcode. Opt in at configure
-time:
-
-```bash
-cmake -S . -B build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DSOFT_FP64_BUILD_ACPP_METAL_ADAPTER=ON
-cmake --build build --target soft_fp64_acpp_metal_stage
-# then: -DACPP_METAL_EXTERNAL_FP64_DIR=$(pwd)/build/adapters/acpp_metal/staged
-```
-
-The adapter does not add public ABI — it forwards to `sf64_*`, never
-reimplements. See `adapters/acpp_metal/README.md` for the pinned
-AdaptiveCpp branch/SHA, the full symbol-coverage table, and the
-end-to-end integration contract.
+The AdaptiveCpp Metal SSCP path — used by downstream GPU consumers on
+Apple Silicon, where the GPU lacks native fp64 — used to ship as a
+bundled adapter under `adapters/acpp_metal/`. As of v2.0.0 that glue
+lives in AdaptiveCpp itself (the `__acpp_sscp_*_f64` forwarders are
+AdaptiveCpp ABI symbols, not soft-fp64's public surface). See
+[`yocontra/AdaptiveCpp`](https://github.com/yocontra/AdaptiveCpp) on
+the `fork-safe-metal` branch for the integration; soft-fp64 is
+consumed there as a generic source dependency via the public `sf64_*`
+ABI plus the `src/` and `src/sleef/` source trees (exposed by
+`find_package(soft_fp64)` as `soft_fp64_SOURCE_DIR` /
+`soft_fp64_SLEEF_SOURCE_DIR`).
 
 ## Precision guarantees
 

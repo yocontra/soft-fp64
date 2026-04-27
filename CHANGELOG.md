@@ -7,6 +7,55 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Every numeric claim in this file traces to a specific CI-gated sweep.
 See `README.md` for the full precision table.
 
+## [2.0.0] — 2026-04-26
+
+Public-API removal: the bundled AdaptiveCpp Metal adapter is gone.
+soft-fp64 returns to being a generic IEEE-754 binary64 soft-float
+library that knows nothing about its consumers. The `sf64_*` C ABI
+and the `include/soft_fp64/` header layout are unchanged; only the
+adapter surface — which had its own `SOFT_FP64_BUILD_ACPP_METAL_ADAPTER`
+opt-in and shipped under v1.x — is removed.
+
+### Removed
+
+- **`adapters/acpp_metal/` directory in full.** Deleted: the
+  `CMakeLists.txt`, the staging-rewrite helpers under `cmake/`
+  (`rewrite_sleef_include.cmake`, `stage_internal_fenv.cmake`,
+  `check_forwarder_symbols.cmake`), the forwarder TUs
+  (`acpp_metal_math.cpp`, `acpp_metal_primitives.cpp`), and the
+  adapter `README.md`. The `__acpp_sscp_*_f64` and
+  `__acpp_sscp_soft_f64_*` symbols those TUs defined are AdaptiveCpp
+  ABI, not soft-fp64's, and now live in AdaptiveCpp's own tree on
+  the `fork-safe-metal` branch of `yocontra/AdaptiveCpp`.
+- **`SOFT_FP64_BUILD_ACPP_METAL_ADAPTER` CMake option and the
+  `soft_fp64_acpp_metal_stage` target.** Both gone. Top-level
+  `CMakeLists.txt` no longer references the adapter directory.
+- **`acpp-metal-smoke` CI job** in `.github/workflows/ci.yml`. The
+  bitcode-link smoke test moves to AdaptiveCpp's own CI alongside
+  the absorbed glue.
+
+### Layout contract for downstream source consumers
+
+Consumers that need to compile the `sf64_*` bodies themselves
+(AdaptiveCpp's libkernel bitcode build globs `.cpp` files directly
+into a SYCL/SSCP target rather than linking the host archive) can
+rely on the following, stable for the v2.x line:
+
+- `src/*.cpp` — arithmetic, compare, convert, sqrt/fma, rounding,
+  classify, fenv. Hidden-visibility internal headers ride alongside
+  (`internal*.h`) and are not promoted to the public include set.
+- `src/sleef/*.cpp` — SLEEF-derived transcendentals (exp/log, trig,
+  inv/hyp/pow, stubs). See `src/sleef/NOTICE` for attribution.
+- `include/soft_fp64/*.h` — public C ABI; unchanged.
+
+When consumed via `find_package(soft_fp64)`, the install also
+exposes the source tree under `${CMAKE_INSTALL_DATADIR}/soft_fp64/src`
+and surfaces `soft_fp64_SOURCE_DIR` / `soft_fp64_SLEEF_SOURCE_DIR` /
+`soft_fp64_INCLUDE_DIR` as resolved absolute paths in
+`soft_fp64Config.cmake`.
+
+[2.0.0]: https://github.com/yocontra/soft-fp/releases/tag/v2.0.0
+
 ## [1.2.0] — 2026-04-26
 
 Substantial release. Closes the AGX recursion-hang surfaced by

@@ -358,7 +358,7 @@ jobs:
         run: |
           lcov --capture --directory build \
                --output-file coverage.info \
-               --ignore-errors mismatch,gcov,source
+               --ignore-errors mismatch,gcov,source,negative
           lcov --remove coverage.info \
                '/usr/*' '*/tests/*' '*/_deps/*' \
                --output-file coverage.cleaned \
@@ -463,102 +463,6 @@ jobs:
             exit 1
           fi
           echo "ABI surface clean."
-
-  # ---------------------------------------------------------------------------
-  # 6b. AdaptiveCpp Metal fp64 adapter smoke.
-  #
-  # Stages the soft-fp64 sources through the adapter and then configures
-  # AdaptiveCpp against that staged dir, building the metal libkernel
-  # bitcode target. Runs on macos-14 only (the adapter's sole target
-  # platform — Metal libkernel has no non-Apple-Silicon consumer).
-  #
-  # AdaptiveCpp is pinned to the fork-safe-metal branch at the SHA
-  # recorded in adapters/acpp_metal/README.md. Re-bumping the pin
-  # requires re-reading the fp64 ABI contract at the new SHA.
-  #
-  # The job is PR-gated (no cron) because its value is binary: either
-  # the bitcode build compiles against the staged sources or it
-  # doesn't. Cron wouldn't surface anything the PR path doesn't, and
-  # it'd burn macos-14 minutes.
-  # ---------------------------------------------------------------------------
-  acpp-metal-smoke:
-    name: acpp metal fp64 smoke
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: soft-fp64
-
-      - name: Pin AdaptiveCpp SHA
-        id: acpp_pin
-        run: |
-          # Must match adapters/acpp_metal/README.md — if the pin below
-          # drifts from that doc, one or the other is wrong.
-          echo "sha=c86d474a3f1fb06705679efa527ea262b5a991cf" >> "$GITHUB_OUTPUT"
-          echo "branch=fork-safe-metal" >> "$GITHUB_OUTPUT"
-
-      - name: Install MPFR + GMP (soft-fp64 tests)
-        run: |
-          brew update
-          brew install mpfr gmp
-
-      - name: Clone AdaptiveCpp (pinned fork-safe-metal)
-        run: |
-          # fork-safe-metal branch lives on yocontra/AdaptiveCpp; the
-          # external-fp64 hook + bitcode-link fixes are not yet upstreamed.
-          git clone --branch "${{ steps.acpp_pin.outputs.branch }}" \
-            https://github.com/yocontra/AdaptiveCpp.git AdaptiveCpp
-          cd AdaptiveCpp
-          git fetch --depth 1 origin "${{ steps.acpp_pin.outputs.sha }}"
-          git checkout "${{ steps.acpp_pin.outputs.sha }}"
-          git rev-parse HEAD
-
-      - name: Stage soft-fp64 sources for the adapter
-        working-directory: soft-fp64
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSOFT_FP64_BUILD_ACPP_METAL_ADAPTER=ON
-          cmake --build build --target soft_fp64_acpp_metal_stage
-          ls build/adapters/acpp_metal/staged/
-
-      - name: Configure AdaptiveCpp with external fp64 dir
-        working-directory: AdaptiveCpp
-        run: |
-          STAGED=$(cd ../soft-fp64/build/adapters/acpp_metal/staged && pwd)
-          cmake -S . -B build \
-            -DACPP_COMPILER_FEATURE_PROFILE=full \
-            -DWITH_METAL_BACKEND=ON \
-            -DACPP_METAL_EXTERNAL_FP64_DIR="$STAGED" \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build libkernel-sscp-metal bitcode
-        working-directory: AdaptiveCpp
-        run: |
-          # Target name: libkernel-sscp-metal (not -metal-bitcode); produces
-          # build/src/libkernel/sscp/metal/libkernel-sscp-metal-full.bc.
-          cmake --build build --target libkernel-sscp-metal -j 4 2>&1 | tee build.log
-          # Sanity: the staged external sources show up in the build log.
-          if ! grep -q -i "fp64\|soft_f64\|arithmetic.cpp" build.log; then
-            echo "Expected to see fp64 / staged .cpp sources in build log." >&2
-            exit 1
-          fi
-          # Sanity: the linked bitcode has every __acpp_sscp_*_f64 defined
-          # and zero undefined — i.e. the adapter fully satisfies the ABI.
-          LLVM_NM=$(command -v llvm-nm || echo /opt/homebrew/opt/llvm/bin/llvm-nm)
-          BC=build/src/libkernel/sscp/metal/libkernel-sscp-metal-full.bc
-          undef=$($LLVM_NM --undefined-only "$BC" | grep -cE "_f64|sf64_" || true)
-          if [ "$undef" -ne 0 ]; then
-            echo "Unresolved f64 symbols in linked bitcode:" >&2
-            $LLVM_NM --undefined-only "$BC" | grep -E "_f64|sf64_" >&2
-            exit 1
-          fi
-          def=$($LLVM_NM --defined-only "$BC" | grep -cE "T ___?acpp_sscp_[a-z_]+_f64" || true)
-          echo "Defined __acpp_sscp_*_f64 symbols: $def"
-          if [ "$def" -lt 80 ]; then
-            echo "Expected >=80 defined f64 symbols, got $def." >&2
-            exit 1
-          fi
 
   # ---------------------------------------------------------------------------
   # 7. Lint — runs `prek` (https://github.com/j178/prek) against the

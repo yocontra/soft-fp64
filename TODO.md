@@ -107,9 +107,10 @@ arithmetic on top of `sf64_*` — TBD when the work starts).
 This repo owns the `sf64_*` core ABI. Adapter code that wires
 `sf64_*` into a consumer project (CMake glue, builtin forwarders,
 bitcode-archive packaging, dispatch-table edits) belongs in that
-consumer's tree, not here. The current `adapters/acpp_metal/`
-subtree is a transitional prototype — it exits this repo once
-AdaptiveCpp merges the upstream equivalent.
+consumer's tree, not here. The previous `adapters/acpp_metal/`
+prototype was removed in v2.0.0; the AdaptiveCpp glue lives in
+`yocontra/AdaptiveCpp` on the `fork-safe-metal` branch, and
+soft-fp64 is consumed there as a generic source dependency.
 
 Each item below is a concrete wedge into a downstream project —
 what they're stuck on, where `sf64_*` fits, the PR shape, and the
@@ -147,8 +148,10 @@ plumbing. No in-flight fp64 PR.
 1. **libkernel bodies.** One-line forwarders from each
    `__acpp_sscp_*_f64` builtin (~70 entries declared in
    `include/hipSYCL/sycl/libkernel/sscp/builtins/math.hpp` et
-   al.) to the corresponding `sf64_*` symbol. Metal bitcode +
-   linker wiring already prototyped in `adapters/acpp_metal/`.
+   al.) to the corresponding `sf64_*` symbol. The forwarder set
+   prototyped historically under `adapters/acpp_metal/` now lives
+   in AdaptiveCpp's tree (`yocontra/AdaptiveCpp`,
+   `fork-safe-metal` branch).
 2. **IR-level fp64 legalization pass.** MSL has no `double` at
    the language level — `Emitter.cpp` rejects `llvm::DoubleTy`
    as a source-language error, not a missing-builtin link
@@ -166,11 +169,12 @@ plumbing. No in-flight fp64 PR.
 values + fp64 IR ops to `i64` + `sf64_*` calls. Register
 forwarders in the Metal `remapped_llvm_math_builtins` table
 (`src/compiler/llvm-to-backend/metal/LLVMToMetal.cpp:60-112`).
-(2) Move `adapters/acpp_metal/` staged bodies into AdaptiveCpp's
-SSCP extension tree under roughly
-`src/runtime/sscp/extensions/soft_fp64/`. (3) Opt-in CMake
-option. (4) Once merged, delete `adapters/acpp_metal/` from this
-repo.
+(2) Forwarder bodies live in AdaptiveCpp's SSCP extension tree
+(roughly `src/runtime/sscp/extensions/soft_fp64/`); soft-fp64 is
+consumed as a source dependency via `find_package(soft_fp64)` and
+`soft_fp64_SOURCE_DIR` / `soft_fp64_SLEEF_SOURCE_DIR`. (3) Opt-in
+CMake option on the AdaptiveCpp side. The previous in-repo
+`adapters/acpp_metal/` prototype was removed in soft-fp64 v2.0.0.
 
 **Hurdles.** License (MIT → AdaptiveCpp BSD-3, compatible).
 Release-cadence coupling — consumers pinned to an older
