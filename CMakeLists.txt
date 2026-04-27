@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(soft_fp64
-    VERSION 2.0.0
+    VERSION 1.2.0
     DESCRIPTION "Portable bit-exact IEEE-754 binary64 soft-float library"
     LANGUAGES CXX)
 

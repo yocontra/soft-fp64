@@ -152,7 +152,7 @@ frontend) and lets the library stay generic.
 
 The AdaptiveCpp Metal SSCP path — used by downstream GPU consumers on
 Apple Silicon, where the GPU lacks native fp64 — used to ship as a
-bundled adapter under `adapters/acpp_metal/`. As of v2.0.0 that glue
+bundled adapter under `adapters/acpp_metal/`. As of v1.2.0 that glue
 lives in AdaptiveCpp itself (the `__acpp_sscp_*_f64` forwarders are
 AdaptiveCpp ABI symbols, not soft-fp64's public surface). See
 [`yocontra/AdaptiveCpp`](https://github.com/yocontra/AdaptiveCpp) on

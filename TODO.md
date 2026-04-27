@@ -108,7 +108,7 @@ This repo owns the `sf64_*` core ABI. Adapter code that wires
 `sf64_*` into a consumer project (CMake glue, builtin forwarders,
 bitcode-archive packaging, dispatch-table edits) belongs in that
 consumer's tree, not here. The previous `adapters/acpp_metal/`
-prototype was removed in v2.0.0; the AdaptiveCpp glue lives in
+prototype was removed in v1.2.0; the AdaptiveCpp glue lives in
 `yocontra/AdaptiveCpp` on the `fork-safe-metal` branch, and
 soft-fp64 is consumed there as a generic source dependency.
 
@@ -174,7 +174,7 @@ forwarders in the Metal `remapped_llvm_math_builtins` table
 consumed as a source dependency via `find_package(soft_fp64)` and
 `soft_fp64_SOURCE_DIR` / `soft_fp64_SLEEF_SOURCE_DIR`. (3) Opt-in
 CMake option on the AdaptiveCpp side. The previous in-repo
-`adapters/acpp_metal/` prototype was removed in soft-fp64 v2.0.0.
+`adapters/acpp_metal/` prototype was removed in soft-fp64 v1.2.0.
 
 **Hurdles.** License (MIT → AdaptiveCpp BSD-3, compatible).
 Release-cadence coupling — consumers pinned to an older
