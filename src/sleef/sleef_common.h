@@ -28,6 +28,7 @@
 #include "../../include/soft_fp64/defines.h"
 #include "../../include/soft_fp64/soft_f64.h"
 #include "../internal_arith.h"
+#include "../internal_classify.h"
 #include "../internal_fenv.h"
 
 #include <cstdint>
@@ -84,33 +85,35 @@ SF64_ALWAYS_INLINE double neg(double x) noexcept {
     return soft_fp64::internal::sf64_internal_neg(x);
 }
 SF64_ALWAYS_INLINE double abs_(double x) noexcept {
-    return sf64_fabs(x);
+    return soft_fp64::internal::sf64_internal_fabs(x);
 }
 
 // Relational predicates — every comparison on a `double` lvalue inside the
-// SLEEF layer goes through `sf64_fcmp` so it stays bit-exact on targets
-// without native fp64. LLVM FCmpInst::Predicate encoding (see
+// SLEEF layer goes through `sf64_internal_fcmp` (the hidden-visibility
+// inline lift of the public `sf64_fcmp` body) so it stays bit-exact on
+// targets without native fp64 AND avoids the cross-TU public-ABI call
+// frame on every comparison. LLVM FCmpInst::Predicate encoding (see
 // include/soft_fp64/soft_f64.h § fcmp predicates): 1=OEQ, 2=OGT, 3=OGE,
 // 4=OLT, 5=OLE, 14=UNE. C++'s relational operators map to the ordered
 // predicates (NaN on either side ⇒ false); `!=` matches UNE because
 // `NaN != x` is true in C++.
 SF64_ALWAYS_INLINE bool lt_(double a, double b) noexcept {
-    return sf64_fcmp(a, b, 4) != 0;
+    return soft_fp64::internal::sf64_internal_fcmp(a, b, 4) != 0;
 }
 SF64_ALWAYS_INLINE bool le_(double a, double b) noexcept {
-    return sf64_fcmp(a, b, 5) != 0;
+    return soft_fp64::internal::sf64_internal_fcmp(a, b, 5) != 0;
 }
 SF64_ALWAYS_INLINE bool gt_(double a, double b) noexcept {
-    return sf64_fcmp(a, b, 2) != 0;
+    return soft_fp64::internal::sf64_internal_fcmp(a, b, 2) != 0;
 }
 SF64_ALWAYS_INLINE bool ge_(double a, double b) noexcept {
-    return sf64_fcmp(a, b, 3) != 0;
+    return soft_fp64::internal::sf64_internal_fcmp(a, b, 3) != 0;
 }
 SF64_ALWAYS_INLINE bool eq_(double a, double b) noexcept {
-    return sf64_fcmp(a, b, 1) != 0;
+    return soft_fp64::internal::sf64_internal_fcmp(a, b, 1) != 0;
 }
 SF64_ALWAYS_INLINE bool ne_(double a, double b) noexcept {
-    return sf64_fcmp(a, b, 14) != 0;
+    return soft_fp64::internal::sf64_internal_fcmp(a, b, 14) != 0;
 }
 
 // Short-name aliases so call-site syntax matches the old `sf64_add(a,b)`
@@ -135,10 +138,11 @@ SF64_ALWAYS_INLINE double sqrt_(double x, sf64_internal_fe_acc& fe) noexcept {
     return soft_fp64::internal::sf64_internal_sqrt_rne(x, fe);
 }
 
-// Integer power-of-two multiplier — uses sf64_ldexp so no host FPU.
+// Integer power-of-two multiplier — uses sf64_internal_ldexp so no host
+// FPU and no cross-TU call frame.
 SF64_ALWAYS_INLINE double pow2i(int q) noexcept {
-    // 1.0 * 2^q via ldexp.
-    return sf64_ldexp(1.0, q);
+    // 1.0 * 2^q via the hidden-visibility inline ldexp lift.
+    return soft_fp64::internal::sf64_internal_ldexp(1.0, q);
 }
 
 // Extract the high 32 mantissa bits (used by Dekker's upper()).
@@ -167,7 +171,7 @@ SF64_ALWAYS_INLINE double rint_(double x) noexcept {
 }
 
 SF64_ALWAYS_INLINE double trunc_(double x) noexcept {
-    return sf64_trunc(x);
+    return soft_fp64::internal::sf64_internal_trunc(x);
 }
 
 // ---- Horner polynomial evaluation --------------------------------------

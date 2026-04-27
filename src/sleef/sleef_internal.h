@@ -56,14 +56,16 @@ SF64_ALWAYS_INLINE double qNaN() noexcept {
 // ---- integer predicates (no host FPU arithmetic in the body) ------------
 
 SF64_ALWAYS_INLINE bool is_int(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
-    return soft_fp64::sleef::eq_(soft_fp64::sleef::sub_(x, sf64_trunc(x), fe), 0.0);
+    return soft_fp64::sleef::eq_(
+        soft_fp64::sleef::sub_(x, soft_fp64::internal::sf64_internal_trunc(x), fe), 0.0);
 }
 
 SF64_ALWAYS_INLINE bool is_odd_int(double x, soft_fp64::sleef::sf64_internal_fe_acc& fe) noexcept {
     if (!is_int(x, fe))
         return false;
     const double half = soft_fp64::sleef::mul_(x, 0.5, fe);
-    return soft_fp64::sleef::ne_(soft_fp64::sleef::sub_(half, sf64_trunc(half), fe), 0.0);
+    return soft_fp64::sleef::ne_(
+        soft_fp64::sleef::sub_(half, soft_fp64::internal::sf64_internal_trunc(half), fe), 0.0);
 }
 
 } // namespace soft_fp64::sleef::detail

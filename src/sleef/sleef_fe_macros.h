@@ -40,6 +40,20 @@
 // consistency; resolves to a bit flip.
 #define sf64_neg(x) ::soft_fp64::internal::sf64_internal_neg((x))
 
+// ---- classify / sign-magnitude / exponent manipulation -----------------
+// Hidden-visibility inline lifts of the public `sf64_{fcmp,trunc,ldexp,
+// frexp,fabs}` bodies. Each macro routes the SLEEF-side call to the
+// header-inlined helper in src/internal_classify.h, eliminating the
+// cross-TU public-ABI cost (call frame + Apple-Silicon TLS roundtrip in
+// tls fenv mode). Bit-exact same output as the public ABI — these are
+// literal lifts, not new implementations. The public sf64_* entries stay
+// unchanged for ABI consumers (AdaptiveCpp's MSL emitter, etc.).
+#define sf64_fcmp(...) ::soft_fp64::internal::sf64_internal_fcmp(__VA_ARGS__)
+#define sf64_trunc(x) ::soft_fp64::internal::sf64_internal_trunc((x))
+#define sf64_ldexp(...) ::soft_fp64::internal::sf64_internal_ldexp(__VA_ARGS__)
+#define sf64_frexp(...) ::soft_fp64::internal::sf64_internal_frexp(__VA_ARGS__)
+#define sf64_fabs(x) ::soft_fp64::internal::sf64_internal_fabs((x))
+
 // ---- DD primitives ------------------------------------------------------
 // Each DD primitive listed in sleef_common.h takes `fe` as its final
 // parameter. The macros below append `fe` to the caller's argument list.
