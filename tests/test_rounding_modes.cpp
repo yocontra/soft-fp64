@@ -64,38 +64,45 @@ struct HostFenvGuard {
     }
 };
 
-double host_add(double a, double b, int m) {
+// noinline + volatile + asm-memory-barrier in HostFenvGuard together force
+// the host FP op to run at runtime under the just-set rounding mode, even on
+// older AppleClang where `volatile` alone wasn't enough to defeat compile-
+// time constant-folding of e.g. 1.0 - 2^-1022 to 1.0 (the RNE result)
+// despite a fesetround(FE_TOWARDZERO) on the line above.
+[[gnu::noinline]] double host_add(double a, double b, int m) {
     HostFenvGuard g(m);
     volatile double va = a, vb = b;
     return va + vb;
 }
-double host_sub(double a, double b, int m) {
+[[gnu::noinline]] double host_sub(double a, double b, int m) {
     HostFenvGuard g(m);
     volatile double va = a, vb = b;
     return va - vb;
 }
-double host_mul(double a, double b, int m) {
+[[gnu::noinline]] double host_mul(double a, double b, int m) {
     HostFenvGuard g(m);
     volatile double va = a, vb = b;
     return va * vb;
 }
-double host_div(double a, double b, int m) {
+[[gnu::noinline]] double host_div(double a, double b, int m) {
     HostFenvGuard g(m);
     volatile double va = a, vb = b;
     return va / vb;
 }
-double host_sqrt(double a, int m) {
+[[gnu::noinline]] double host_sqrt(double a, int m) {
     HostFenvGuard g(m);
     volatile double va = a;
     return std::sqrt(va);
 }
-double host_fma(double a, double b, double c, int m) {
+[[gnu::noinline]] double host_fma(double a, double b, double c, int m) {
     HostFenvGuard g(m);
-    return std::fma(a, b, c);
+    volatile double va = a, vb = b, vc = c;
+    return std::fma(va, vb, vc);
 }
-float host_to_f32(double x, int m) {
+[[gnu::noinline]] float host_to_f32(double x, int m) {
     HostFenvGuard g(m);
-    return static_cast<float>(x);
+    volatile double vx = x;
+    return static_cast<float>(vx);
 }
 
 // Finite random doubles the host can round safely. The `any` stream would
