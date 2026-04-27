@@ -323,7 +323,10 @@ SF64_ALWAYS_INLINE uint64_t fp64_to_unsigned(double x, uint64_t umax, sf64_round
 // f32 <-> f64
 // -------------------------------------------------------------------------
 
-extern "C" double sf64_from_f32(float x) {
+// Shared body for sf64_from_f32 / sf64_from_f32_ex. Routes the sNaN→INVALID
+// raise through the caller's accumulator so explicit-mode (state-backed)
+// callers observe the flag, not just the TLS-backed default.
+SF64_ALWAYS_INLINE double from_f32_impl(float x, sf64_internal_fe_acc& fe) noexcept {
     // SAFETY: read the fp32 operand's raw bit pattern without ever
     // materializing a `float` lvalue — on Apple6+ (MSL §6.20) fp32 is
     // flush-to-zero, so a rematerialized float would collapse subnormals
@@ -346,11 +349,6 @@ extern "C" double sf64_from_f32(float x) {
         // fraction sits at position `p = 31 - lz`, so the unbiased exponent
         // is `p - 149` and the f64 biased exponent is `p - 149 + 1023`
         // = 874 + p = 905 - lz.
-        //
-        // To land the implicit bit in the fp64 MSB of the mantissa, we
-        // left-shift the 32-bit fraction by `(52 - p) = lz + 21` bits when
-        // interpreted as a uint64 with the leading 1 going to bit 52. Since
-        // we drop the implicit bit on pack, mask against kFracMask.
         const int lz = clz32(frac32); // SAFETY: frac32 != 0 here.
         const int p = 31 - lz;        // position of leading 1 (0..22)
         const uint32_t f64_exp = static_cast<uint32_t>(905 - lz);
@@ -369,7 +367,7 @@ extern "C" double sf64_from_f32(float x) {
         // IEEE 754 §6.2 / §7.2: format-conversion of a sNaN raises INVALID.
         // f32 sNaN: bit 22 of the f32 mantissa clear (and frac != 0).
         if ((frac32 & (1u << 22)) == 0u) {
-            SF64_FE_RAISE(SF64_FE_INVALID);
+            fe.raise(SF64_FE_INVALID);
         }
         const uint64_t payload = static_cast<uint64_t>(frac32) << 29;
         return from_bits(pack(sign, kExpMax, payload | kQuietNaNBit));
@@ -379,6 +377,13 @@ extern "C" double sf64_from_f32(float x) {
     const uint32_t f64_exp = exp32 + (kExpBias - 127);
     const uint64_t f64_frac = static_cast<uint64_t>(frac32) << 29;
     return from_bits(pack(sign, f64_exp, f64_frac));
+}
+
+extern "C" double sf64_from_f32(float x) {
+    sf64_internal_fe_acc fe;
+    const double r = from_f32_impl(x, fe);
+    fe.flush();
+    return r;
 }
 
 namespace {
@@ -716,6 +721,13 @@ extern "C" uint64_t sf64_to_u64_r(sf64_rounding_mode mode, double x) {
 // ---------------------------------------------------------------------------
 
 #if SOFT_FP64_FENV_MODE == 1 || SOFT_FP64_FENV_MODE == 2
+
+extern "C" double sf64_from_f32_ex(float x, sf64_fe_state_t* state) {
+    sf64_internal_fe_acc fe{state};
+    const double r = from_f32_impl(x, fe);
+    fe.flush();
+    return r;
+}
 
 extern "C" float sf64_to_f32_ex(double x, sf64_fe_state_t* state) {
     sf64_internal_fe_acc fe{state};

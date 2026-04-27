@@ -119,6 +119,9 @@ inline double sqrt_(double x) {
 inline double fma_(double a, double b, double c) {
     return sf64_fma_ex(a, b, c, &g_state);
 }
+inline double from_f32(float x) {
+    return sf64_from_f32_ex(x, &g_state);
+}
 inline float to_f32(double x) {
     return sf64_to_f32_ex(x, &g_state);
 }
@@ -237,6 +240,7 @@ inline uint64_t to_u64_r(sf64_rounding_mode m, double x) {
 #define sf64_div ex_shim::div_
 #define sf64_sqrt ex_shim::sqrt_
 #define sf64_fma ex_shim::fma_
+#define sf64_from_f32 ex_shim::from_f32
 #define sf64_to_f32 ex_shim::to_f32
 #define sf64_from_i8 ex_shim::from_i8
 #define sf64_from_i16 ex_shim::from_i16

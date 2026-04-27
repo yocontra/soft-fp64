@@ -1014,6 +1014,8 @@ double sf64_div_r_ex(sf64_rounding_mode mode, double a, double b, sf64_fe_state_
 double sf64_sqrt_r_ex(sf64_rounding_mode mode, double x, sf64_fe_state_t* state);
 double sf64_fma_r_ex(sf64_rounding_mode mode, double a, double b, double c, sf64_fe_state_t* state);
 
+/** @brief Widen f32 → f64 (caller-state). @see sf64_from_f32 */
+double sf64_from_f32_ex(float x, sf64_fe_state_t* state);
 /** @brief Narrow f64 → f32 (RNE, caller-state). @see sf64_to_f32 */
 float sf64_to_f32_ex(double x, sf64_fe_state_t* state);
 /** @brief Narrow f64 → f32 with explicit rounding mode (caller-state). */
