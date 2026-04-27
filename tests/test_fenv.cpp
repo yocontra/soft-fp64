@@ -348,7 +348,7 @@ void test_thread_isolation() {
     std::vector<std::thread> workers;
     std::vector<unsigned> results(5, 0u);
     for (int i = 0; i < 5; ++i) {
-        workers.emplace_back([i, &results]() {
+        workers.emplace_back([i, &results, &flags_per_thread]() {
             sf64_fe_raise(flags_per_thread[i]);
             results[i] = sf64_fe_getall();
         });
